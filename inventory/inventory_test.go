@@ -2,75 +2,86 @@ package inventory_test
 
 import (
 	"encoding/json"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/puppetlabs/inventory/inventory"
-
-	logger2 "github.com/jirenius/go-res/logger"
-	"github.com/jirenius/go-res/test"
-
-	"github.com/lyraproj/dgo/vf"
-
 	"github.com/jirenius/go-res"
+	"github.com/jirenius/go-res/logger"
+	"github.com/jirenius/go-res/test"
 	"github.com/lyraproj/dgo/dgo"
 	require "github.com/lyraproj/dgo/dgo_test"
 	"github.com/lyraproj/dgo/streamer"
+	"github.com/lyraproj/dgo/vf"
+	"github.com/lyraproj/dgoyaml/yaml"
+	"github.com/puppetlabs/inventory/inventory"
 )
 
-type request struct {
-	CID        string              `json:"cid,omitempty"`
-	Params     json.RawMessage     `json:"params,omitempty"`
-	Token      json.RawMessage     `json:"token,omitempty"`
-	Header     map[string][]string `json:"header,omitempty"`
-	Host       string              `json:"host,omitempty"`
-	RemoteAddr string              `json:"remoteAddr,omitempty"`
-	URI        string              `json:"uri,omitempty"`
-	Query      string              `json:"query,omitempty"`
+func TestGetFact(t *testing.T) {
+	s, cl := createSession(`static`, t)
+	require.Equal(t, vf.Values(`first`, `second`), get("inventory.lookup.realmA.nodeA.a", s, t))
+	shutdownSession(s, cl)
 }
 
 func TestListRealms(t *testing.T) {
-	s, cl := createSession(t)
+	s, cl := createSession(`static`, t)
 	require.Equal(t, vf.Map(`realmA`, `https://some.realm.com`), get("inventory.lookup.realms", s, t))
 	shutdownSession(s, cl)
 }
 
 func TestListNodes(t *testing.T) {
-	s, cl := createSession(t)
+	s, cl := createSession(`static`, t)
 	require.Equal(t, vf.Map(`nodeA`, `Node A`, `nodeB`, `Node B`), get("inventory.lookup.realmA.nodes", s, t))
 	shutdownSession(s, cl)
 }
 
-func TestGetFact(t *testing.T) {
-	s, cl := createSession(t)
-	require.Equal(t, vf.Values(`first`, `second`), get("inventory.lookup.realmA.nodeA.a", s, t))
-	shutdownSession(s, cl)
-}
-
-func TestSetFact(t *testing.T) {
-	s, cl := createSession(t)
-	delete("inventory.lookup.realmA.nodeA.n", s, t)
-	shutdownSession(s, cl)
-
-	s, cl = createSession(t)
-	set("inventory.lookup.realmA.nodeA.n", vf.Map(`value`, `value of n`), s, t)
-	shutdownSession(s, cl)
-}
-
 func TestGetFacts(t *testing.T) {
-	s, cl := createSession(t)
+	s, cl := createSession(`static`, t)
 	require.Equal(t, vf.Map(`a`, `value of a`, `b`, `value of b`), get("inventory.lookup.realmA.nodeB.facts", s, t))
 	shutdownSession(s, cl)
 }
 
-func createSession(t *testing.T) (*test.Session, chan struct{}) {
+func TestDeleteFact(t *testing.T) {
+	createNode(`realmX`, `nodeA`, vf.Map(`a`, `value of a`), t)
+	s, cl := createSession(`volatile`, t)
+	remove("inventory.lookup.realmX.nodeA.a", s, t)
+	shutdownSession(s, cl)
+	ensureNode(`realmX`, `nodeA`, vf.Map(), t)
+}
+
+func TestDeleteNode(t *testing.T) {
+	createNode(`realmX`, `nodeD`, vf.Map(`a`, `value of a`), t)
+	s, cl := createSession(`volatile`, t)
+	remove("inventory.lookup.realmX.nodeD", s, t)
+	shutdownSession(s, cl)
+	ensureNoNode(`realmX`, `nodeD`, t)
+}
+
+func TestSetFact(t *testing.T) {
+	createNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`), t)
+	s, cl := createSession(`volatile`, t)
+	set("inventory.lookup.realmY.nodeA", vf.Map(`n`, `value of n`), s, t)
+	shutdownSession(s, cl)
+	ensureNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`, `n`, `value of n`), t)
+}
+
+func TestNewNode(t *testing.T) {
+	createNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`), t)
+	s, cl := createSession(`volatile`, t)
+	set("inventory.lookup.realmY.nodeB", vf.Map(`__value`, `Node B`), s, t)
+	shutdownSession(s, cl)
+	ensureNode(`realmY`, `nodeB`, vf.Map(), t)
+}
+
+func createSession(dir string, t *testing.T) (*test.Session, chan struct{}) {
 	t.Helper()
 
 	var s *test.Session
 	c := test.NewTestConn(false)
 	r := res.NewService("inventory")
-	logger := logger2.NewMemLogger()
-	r.SetLogger(logger)
+	r.SetLogger(logger.NewMemLogger())
 
 	s = &test.Session{
 		MockConn: c,
@@ -78,7 +89,7 @@ func createSession(t *testing.T) (*test.Session, chan struct{}) {
 	}
 	cl := make(chan struct{})
 
-	inventory.NewService("testdata", `realms`, `nodes`, `facts`).AddHandlers(r)
+	inventory.NewService(inventory.NewFileStorage(filepath.Join("testdata", dir), `realms`, `nodes`, `facts`)).AddHandlers(r)
 
 	go func() {
 		defer s.StopServer()
@@ -150,6 +161,17 @@ func get(rid string, s *test.Session, t *testing.T) dgo.Value {
 	return parseMessage(msg, `result`, s, t)
 }
 
+type request struct {
+	CID        string              `json:"cid,omitempty"`
+	Params     json.RawMessage     `json:"params,omitempty"`
+	Token      json.RawMessage     `json:"token,omitempty"`
+	Header     map[string][]string `json:"header,omitempty"`
+	Host       string              `json:"host,omitempty"`
+	RemoteAddr string              `json:"remoteAddr,omitempty"`
+	URI        string              `json:"uri,omitempty"`
+	Query      string              `json:"query,omitempty"`
+}
+
 func set(rid string, v dgo.Map, s *test.Session, t *testing.T) {
 	t.Helper()
 	s.Request(`call.`+rid+`.set`, &request{Params: streamer.MarshalJSON(v, nil)})
@@ -158,9 +180,61 @@ func set(rid string, v dgo.Map, s *test.Session, t *testing.T) {
 	require.Equal(t, v, parseMessage(msg, `values`, s, t))
 }
 
-func delete(rid string, s *test.Session, t *testing.T) {
+func remove(rid string, s *test.Session, t *testing.T) {
 	t.Helper()
 	s.Request(`call.`+rid+`.delete`, &request{})
 	msg := s.GetMsg(t)
 	require.Equal(t, msg.Subject, `event.`+rid+`.delete`)
+}
+
+func createNode(realm, node string, facts dgo.Map, t *testing.T) {
+	t.Helper()
+
+	// ensure that there's nothing there
+	realmDir := filepath.Join(`testdata`, `volatile`, realm)
+	createLevel(realmDir, vf.Map(`__value`, realm), t)
+	createLevel(filepath.Join(realmDir, node), facts.Merge(vf.Map(`__value`, node)), t)
+}
+
+func createLevel(path string, data dgo.Value, t *testing.T) {
+	err := os.MkdirAll(path, 0750)
+	if err != nil && !os.IsExist(err) {
+		t.Fatal(err)
+	}
+	yml, err := yaml.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ioutil.WriteFile(filepath.Join(path, `data.yaml`), yml, 0640)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func ensureNode(realm, node string, facts dgo.Map, t *testing.T) {
+	path := filepath.Join(`testdata`, `volatile`, realm, node, `data.yaml`)
+	/* #nosec */
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dv, err := yaml.Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dh, ok := dv.(dgo.Map); ok {
+		require.Equal(t, facts, dh.Without(`__value`))
+	} else {
+		t.Fatalf(`the file %q does not contain a map of values`, path)
+	}
+}
+
+func ensureNoNode(realm, node string, t *testing.T) {
+	_, err := os.Stat(filepath.Join(`testdata`, `volatile`, realm, node))
+	if err == nil {
+		t.Fatalf(`node %s.%s exists`, realm, node)
+	}
+	if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 }

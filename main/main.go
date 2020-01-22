@@ -18,7 +18,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	is := inventory.NewService(p, `realms`, `nodes`, `facts`)
+	is := inventory.NewService(inventory.NewFileStorage(p, `realms`, `nodes`, `facts`))
 	is.AddHandlers(s)
 
 	// Start service in separate goroutine
