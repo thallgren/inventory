@@ -1,7 +1,9 @@
-package inventory
+package iapi
 
 import (
 	"fmt"
+
+	"github.com/puppetlabs/inventory/query"
 
 	"github.com/lyraproj/dgo/dgo"
 )
@@ -25,6 +27,14 @@ type Storage interface {
 	// Get finds a value using a dot separated key. It returns the value or nil if no value
 	// is found.
 	Get(key string) dgo.Value
+
+	// Query finds a value using the dot separate key and a map of query values It returns the value or nil if no value
+	// is found.
+	Query(key string, query dgo.Map) query.Result
+
+	// QueryKeys returns the set of keys that can be used to query this storage at the given
+	// key in a predictable order.
+	QueryKeys(key string) []query.Param
 
 	// Set stores the given model under the given key and returns a map of the entries that
 	// were changed. The returned map will be equal to or a subset of the model.

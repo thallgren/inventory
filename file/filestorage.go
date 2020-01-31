@@ -1,4 +1,5 @@
-package inventory
+// Package file contains the storage for the directory/file based hierarchical storage
+package file
 
 import (
 	"fmt"
@@ -7,19 +8,24 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/puppetlabs/inventory/query"
+
 	"github.com/gofrs/flock"
 	"github.com/lyraproj/dgo/dgo"
 	"github.com/lyraproj/dgo/vf"
-	"github.com/lyraproj/dgoyaml/yaml"
+	"github.com/puppetlabs/inventory/iapi"
+	"github.com/puppetlabs/inventory/yaml"
 )
+
+const valueKey = `__value`
 
 type fileStorage struct {
 	dataDir string
 	hns     []string
 }
 
-// NewFileStorage creates a Storage that is using the file system to persist data
-func NewFileStorage(dataDir string, hierarchyNames ...string) Storage {
+// NewStorage creates a Storage that is using the file system to persist data
+func NewStorage(dataDir string, hierarchyNames ...string) iapi.Storage {
 	return &fileStorage{dataDir: dataDir, hns: hierarchyNames}
 }
 
@@ -49,16 +55,9 @@ func (f *fileStorage) Delete(key string) bool {
 	defer func() {
 		_ = lock.Close()
 	}()
-	pf := readExistingYaml(path).Copy(false) // read, then thaw frozen map
+	pf := yaml.Read(path).Copy(false) // read, then thaw frozen map
 	if pf.Remove(key) != nil {
-		yml, err := yaml.Marshal(pf)
-		if err != nil {
-			panic(err)
-		}
-		err = ioutil.WriteFile(path, yml, 0640)
-		if err != nil {
-			panic(err)
-		}
+		yaml.Write(path, pf)
 		return true
 	}
 	return false
@@ -92,6 +91,29 @@ func (f *fileStorage) Get(key string) dgo.Value {
 	return nil
 }
 
+func (f *fileStorage) Query(key string, _ dgo.Map) (qr query.Result) {
+	switch v := f.Get(key).(type) {
+	case nil:
+	case dgo.Array:
+		qr = query.NewResult(false)
+		v.EachWithIndex(func(e dgo.Value, idx int) {
+			qr.Add(vf.Integer(int64(idx)), e)
+		})
+	case dgo.Map:
+		qr = query.NewResult(true)
+		v.EachEntry(func(e dgo.MapEntry) {
+			qr.Add(e.Key(), e.Value())
+		})
+	default:
+		qr = query.NewSingleResult(v)
+	}
+	return
+}
+
+func (f *fileStorage) QueryKeys(_ string) []query.Param {
+	return []query.Param{} // Not queryable at this time
+}
+
 func (f *fileStorage) Set(key string, model dgo.Map) (dgo.Map, error) {
 	if model.Len() == 0 {
 		return model, nil
@@ -99,7 +121,7 @@ func (f *fileStorage) Set(key string, model dgo.Map) (dgo.Map, error) {
 	parts := strings.Split(key, `.`)
 	lp := len(parts) - 1
 	if lp < 0 {
-		return nil, NotFound(``)
+		return nil, iapi.NotFound(``)
 	}
 	path := filepath.Join(f.dataDir, filepath.Join(parts...), `data.yaml`)
 
@@ -110,7 +132,7 @@ func (f *fileStorage) Set(key string, model dgo.Map) (dgo.Map, error) {
 		defer func() {
 			_ = lock.Close()
 		}()
-		pf = readExistingYaml(path).Copy(false) // read, then thaw frozen map
+		pf = yaml.Read(path).Copy(false) // read, then thaw frozen map
 		changes = vf.MutableMap()
 		model.EachEntry(func(e dgo.MapEntry) {
 			if !e.Value().Equals(pf.Put(e.Key(), e.Value())) {
@@ -129,18 +151,10 @@ func (f *fileStorage) Set(key string, model dgo.Map) (dgo.Map, error) {
 			pf = model
 			changes = pf
 		} else {
-			return nil, NotFound(key)
+			return nil, iapi.NotFound(key)
 		}
 	}
-
-	yml, err := yaml.Marshal(pf)
-	if err != nil {
-		panic(err)
-	}
-	err = ioutil.WriteFile(path, yml, 0640)
-	if err != nil {
-		panic(err)
-	}
+	yaml.Write(path, pf)
 	return changes, nil
 }
 
@@ -161,7 +175,7 @@ func (f *fileStorage) createChild(parts []string) {
 			if !os.IsNotExist(err) {
 				panic(err)
 			}
-			panic(NotFound(strings.Join(pParts, `.`)))
+			panic(iapi.NotFound(strings.Join(pParts, `.`)))
 		}
 		if !pd.IsDir() {
 			panic(fmt.Errorf(`%q is not a directory`, pDir))
@@ -225,21 +239,5 @@ func (f *fileStorage) readData(parts []string) dgo.Map {
 	defer func() {
 		_ = lock.Close()
 	}()
-	return readExistingYaml(path)
-}
-
-func readExistingYaml(path string) dgo.Map {
-	/* #nosec */
-	data, err := ioutil.ReadFile(path)
-	if err != nil {
-		panic(err)
-	}
-	dv, err := yaml.Unmarshal(data)
-	if err != nil {
-		panic(err)
-	}
-	if dh, ok := dv.(dgo.Map); ok {
-		return dh
-	}
-	panic(fmt.Errorf(`the file %q does not contain a map of values`, path))
+	return yaml.Read(path)
 }

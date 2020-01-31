@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
+
+	"github.com/puppetlabs/inventory/bolt"
 
 	"github.com/jirenius/go-res"
 	"github.com/puppetlabs/inventory/inventory"
@@ -13,12 +16,8 @@ import (
 func main() {
 	// Create a new RES Service
 	s := res.NewService(inventory.ServiceName)
-
-	p, err := filepath.Abs(`testdata`)
-	if err != nil {
-		panic(err)
-	}
-	is := inventory.NewService(inventory.NewFileStorage(p, `realms`, `nodes`, `facts`))
+	p := setupTest()
+	is := inventory.NewService(bolt.NewStorage(p))
 	is.AddHandlers(s)
 
 	// Start service in separate goroutine
@@ -39,4 +38,24 @@ func main() {
 		_ = s.Shutdown()
 	case <-stop:
 	}
+}
+
+func setupTest() string {
+	bytes, err := ioutil.ReadFile(filepath.Join(`testdata`, `static`, `bolt_inventory.yaml`))
+	if err != nil {
+		panic(err)
+	}
+
+	vd := filepath.Join(`testdata`, `volatile`)
+	if err = os.MkdirAll(vd, 0750); err != nil {
+		if !os.IsExist(err) {
+			panic(err)
+		}
+	}
+	bs := filepath.Join(vd, `bolt_inventory.yaml`)
+	err = ioutil.WriteFile(bs, bytes, 0640)
+	if err != nil {
+		panic(err)
+	}
+	return bs
 }

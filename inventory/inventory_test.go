@@ -16,61 +16,63 @@ import (
 	"github.com/lyraproj/dgo/streamer"
 	"github.com/lyraproj/dgo/vf"
 	"github.com/lyraproj/dgoyaml/yaml"
+	"github.com/puppetlabs/inventory/file"
 	"github.com/puppetlabs/inventory/inventory"
 )
 
 func TestGetFact(t *testing.T) {
-	s, cl := createSession(`static`, t)
-	require.Equal(t, vf.Values(`first`, `second`), get("inventory.lookup.realmA.nodeA.a", s, t))
+	s, cl := createSession(staticDir(), t)
+	require.Equal(t, vf.Values(`first`, `second`), get("inventory.realmA.nodeA.a", s, t))
 	shutdownSession(s, cl)
 }
 
 func TestListRealms(t *testing.T) {
-	s, cl := createSession(`static`, t)
-	require.Equal(t, vf.Map(`realmA`, `https://some.realm.com`), get("inventory.lookup.realms", s, t))
+	s, cl := createSession(staticDir(), t)
+	require.Equal(t, vf.Map(`realmA`, `https://some.realm.com`), get("inventory.realms", s, t))
 	shutdownSession(s, cl)
 }
 
 func TestListNodes(t *testing.T) {
-	s, cl := createSession(`static`, t)
-	require.Equal(t, vf.Map(`nodeA`, `Node A`, `nodeB`, `Node B`), get("inventory.lookup.realmA.nodes", s, t))
+	s, cl := createSession(staticDir(), t)
+	require.Equal(t, vf.Map(`nodeA`, `Node A`, `nodeB`, `Node B`), get("inventory.realmA.nodes", s, t))
 	shutdownSession(s, cl)
 }
 
 func TestGetFacts(t *testing.T) {
-	s, cl := createSession(`static`, t)
-	require.Equal(t, vf.Map(`a`, `value of a`, `b`, `value of b`), get("inventory.lookup.realmA.nodeB.facts", s, t))
+	s, cl := createSession(staticDir(), t)
+	require.Equal(t, vf.Map(`a`, `value of a`, `b`, `value of b`), get("inventory.realmA.nodeB.facts", s, t))
 	shutdownSession(s, cl)
 }
 
 func TestDeleteFact(t *testing.T) {
 	createNode(`realmX`, `nodeA`, vf.Map(`a`, `value of a`), t)
-	s, cl := createSession(`volatile`, t)
-	remove("inventory.lookup.realmX.nodeA.a", s, t)
+	s, cl := createSession(volatileDir(), t)
+	remove("inventory.realmX.nodeA.a", s, t)
 	shutdownSession(s, cl)
 	ensureNode(`realmX`, `nodeA`, vf.Map(), t)
 }
 
 func TestDeleteNode(t *testing.T) {
 	createNode(`realmX`, `nodeD`, vf.Map(`a`, `value of a`), t)
-	s, cl := createSession(`volatile`, t)
-	remove("inventory.lookup.realmX.nodeD", s, t)
+	s, cl := createSession(volatileDir(), t)
+	remove("inventory.realmX.nodeD", s, t)
 	shutdownSession(s, cl)
 	ensureNoNode(`realmX`, `nodeD`, t)
 }
 
 func TestSetFact(t *testing.T) {
 	createNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`), t)
-	s, cl := createSession(`volatile`, t)
-	set("inventory.lookup.realmY.nodeA", vf.Map(`n`, `value of n`), s, t)
+	s, cl := createSession(volatileDir(), t)
+	set("inventory.realmY.nodeA", vf.Map(`n`, `value of n`), s, t)
 	shutdownSession(s, cl)
 	ensureNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`, `n`, `value of n`), t)
 }
 
 func TestNewNode(t *testing.T) {
 	createNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`), t)
-	s, cl := createSession(`volatile`, t)
-	set("inventory.lookup.realmY.nodeB", vf.Map(`__value`, `Node B`), s, t)
+	deleteNode(`realmY`, `nodeB`, t)
+	s, cl := createSession(volatileDir(), t)
+	set("inventory.realmY.nodeB", vf.Map(`__value`, `Node B`), s, t)
 	shutdownSession(s, cl)
 	ensureNode(`realmY`, `nodeB`, vf.Map(), t)
 }
@@ -89,7 +91,7 @@ func createSession(dir string, t *testing.T) (*test.Session, chan struct{}) {
 	}
 	cl := make(chan struct{})
 
-	inventory.NewService(inventory.NewFileStorage(filepath.Join("testdata", dir), `realms`, `nodes`, `facts`)).AddHandlers(r)
+	inventory.NewService(file.NewStorage(dir, `realms`, `nodes`, `facts`)).AddHandlers(r)
 
 	go func() {
 		defer s.StopServer()
@@ -191,7 +193,7 @@ func createNode(realm, node string, facts dgo.Map, t *testing.T) {
 	t.Helper()
 
 	// ensure that there's nothing there
-	realmDir := filepath.Join(`testdata`, `volatile`, realm)
+	realmDir := filepath.Join(volatileDir(), realm)
 	createLevel(realmDir, vf.Map(`__value`, realm), t)
 	createLevel(filepath.Join(realmDir, node), facts.Merge(vf.Map(`__value`, node)), t)
 }
@@ -211,8 +213,15 @@ func createLevel(path string, data dgo.Value, t *testing.T) {
 	}
 }
 
+func deleteNode(realm, node string, t *testing.T) {
+	err := os.RemoveAll(filepath.Join(volatileDir(), realm, node))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func ensureNode(realm, node string, facts dgo.Map, t *testing.T) {
-	path := filepath.Join(`testdata`, `volatile`, realm, node, `data.yaml`)
+	path := filepath.Join(volatileDir(), realm, node, `data.yaml`)
 	/* #nosec */
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -230,11 +239,27 @@ func ensureNode(realm, node string, facts dgo.Map, t *testing.T) {
 }
 
 func ensureNoNode(realm, node string, t *testing.T) {
-	_, err := os.Stat(filepath.Join(`testdata`, `volatile`, realm, node))
+	_, err := os.Stat(filepath.Join(volatileDir(), realm, node))
 	if err == nil {
 		t.Fatalf(`node %s.%s exists`, realm, node)
 	}
 	if !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
+}
+
+func staticDir() string {
+	return absTestDir(`static`)
+}
+
+func volatileDir() string {
+	return absTestDir(`volatile`)
+}
+
+func absTestDir(dir string) string {
+	path, err := filepath.Abs(filepath.Join(`..`, `testdata`, dir))
+	if err != nil {
+		panic(err)
+	}
+	return path
 }
