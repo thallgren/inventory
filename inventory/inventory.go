@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/puppetlabs/inventory/query"
 
 	"github.com/jirenius/go-res"
@@ -33,16 +35,13 @@ type lookupResult struct {
 
 // A Service contains all the resgate handles and a storage.
 type Service struct {
-	storage iapi.Storage
+	resService *res.Service
+	storage    iapi.Storage
 }
 
 // NewService creates a new Resgate service that will use the givne storage
-func NewService(storage iapi.Storage) *Service {
-	return &Service{storage}
-}
-
-// AddHandlers will initialize the given resgate service with the handlers of this Service
-func (s *Service) AddHandlers(rs *res.Service) {
+func NewService(rs *res.Service, storage iapi.Storage) *Service {
+	s := &Service{rs, storage}
 	// Add handlers for "lookup.$key" models. The response will always be a struct
 	// containing a value.
 	rs.Handle(
@@ -52,12 +51,14 @@ func (s *Service) AddHandlers(rs *res.Service) {
 		res.Set(s.setHandler),
 		res.Call("delete", s.deleteHandler),
 	)
+	return s
 }
 
 func (s *Service) getComplex(r res.GetRequest) {
 	key := r.ResourceName()
 	hk := key[valuePrefixLen:]
-	result := s.storage.Get(hk)
+	mods, result := s.storage.Get(hk)
+	s.modifications(mods)
 	if result == nil {
 		r.NotFound()
 	} else {
@@ -140,7 +141,8 @@ func (s *Service) doQuery(r res.GetRequest, key string, query url.Values) {
 	if !ok {
 		return
 	}
-	result := s.storage.Query(key, qvs)
+	mods, result := s.storage.Query(key, qvs)
+	s.modifications(mods)
 	if result == nil {
 		r.NotFound()
 	} else {
@@ -161,7 +163,8 @@ func (s *Service) doQuery(r res.GetRequest, key string, query url.Values) {
 }
 
 func (s *Service) doGet(r res.GetRequest, key string) {
-	result := s.storage.Get(key)
+	mods, result := s.storage.Get(key)
+	s.modifications(mods)
 	if result == nil {
 		r.NotFound()
 	} else {
@@ -187,7 +190,9 @@ func (s *Service) deleteHandler(r res.CallRequest) {
 		r.NotFound()
 		return
 	}
-	if s.storage.Delete(key[prefixLen:]) {
+	mods, ok := s.storage.Delete(key[prefixLen:])
+	s.modifications(mods)
+	if ok {
 		r.DeleteEvent()
 		r.OK(nil)
 	} else {
@@ -202,22 +207,65 @@ func (s *Service) setHandler(r res.CallRequest) {
 		return
 	}
 	if params, ok := streamer.UnmarshalJSON(r.RawParams(), nil).(dgo.Map); ok {
-		changes, err := s.storage.Set(key[prefixLen:], params)
+		mods, err := s.storage.Set(key[prefixLen:], params)
 		if err != nil {
 			panic(err)
 		}
-		if changes.Len() > 0 {
-			// Send a change event with updated fields
-			var cm map[string]interface{}
-			vf.FromValue(changes, &cm)
-			r.ChangeEvent(cm)
-		}
+		s.modifications(mods)
 
 		// Send success response
 		r.OK(nil)
 		return
 	}
 	panic(errors.New(`unable to extract model from parameters`))
+}
+
+func (s *Service) modifications(mods []*iapi.Modification) {
+	for _, mod := range mods {
+		s.sendModificationEvent(mod)
+	}
+}
+
+func (s *Service) sendModificationEvent(mod *iapi.Modification) {
+	rid := prefix + mod.ResourceName
+	r, err := s.resService.Resource(rid)
+	if err != nil {
+		panic(err)
+	}
+	switch mod.Type {
+	case iapi.Delete:
+		logrus.Debugf(`Delete: %s`, rid)
+		r.DeleteEvent()
+	case iapi.Reset:
+		logrus.Debugf(`Reset: %s`, rid)
+		r.ResetEvent()
+	case iapi.Create:
+		var v interface{}
+		vf.FromValue(mod.Value, &v)
+		logrus.Debugf(`Create: %s = %s`, rid, mod.Value.Type())
+		r.CreateEvent(v)
+	case iapi.Change:
+		var m map[string]interface{}
+		vf.FromValue(mod.Value, &m)
+		logrus.Debugf(`Change: %s = %s`, rid, mod.Value.Type())
+		r.ChangeEvent(m)
+	case iapi.Add:
+		var v interface{}
+		vf.FromValue(mod.Value, &v)
+		logrus.Debugf(`Add: %s[%d] = %s`, rid, mod.Index, mod.Value.Type())
+		r.AddEvent(v, mod.Index)
+	case iapi.Remove:
+		logrus.Debugf(`Remove: %s[%d]`, rid, mod.Index)
+		r.RemoveEvent(mod.Index)
+	case iapi.Set:
+		// TODO: Some confusion here. What should be sent when a collection value is replaced?
+		//  see ticket: https://github.com/resgateio/resgate/issues/145
+		var v interface{}
+		vf.FromValue(mod.Value, &v)
+		logrus.Debugf(`Set: %s[%d] = %s`, rid, mod.Index, mod.Value.Type())
+		r.RemoveEvent(mod.Index)
+		r.AddEvent(v, mod.Index)
+	}
 }
 
 func arrayToCollection(a dgo.Array, path string) []interface{} {

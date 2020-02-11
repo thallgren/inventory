@@ -29,14 +29,14 @@ func NewStorage(dataDir string, hierarchyNames ...string) iapi.Storage {
 	return &fileStorage{dataDir: dataDir, hns: hierarchyNames}
 }
 
-func (f *fileStorage) Delete(key string) bool {
+func (f *fileStorage) Delete(key string) ([]*iapi.Modification, bool) {
 	parts := strings.Split(key, `.`)
 	lp := len(parts) - 1
 	if lp < 1 {
-		return false
+		return nil, false
 	}
 	if f.deleteChild(parts) {
-		return true
+		return nil, true
 	}
 
 	// Delete from data.yaml
@@ -47,7 +47,7 @@ func (f *fileStorage) Delete(key string) bool {
 	err := lock.RLock()
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false
+			return nil, false
 		}
 		panic(err)
 	}
@@ -58,26 +58,26 @@ func (f *fileStorage) Delete(key string) bool {
 	pf := yaml.Read(path).Copy(false) // read, then thaw frozen map
 	if pf.Remove(key) != nil {
 		yaml.Write(path, pf)
-		return true
+		return nil, true
 	}
-	return false
+	return nil, false
 }
 
-func (f *fileStorage) Get(key string) dgo.Value {
+func (f *fileStorage) Get(key string) ([]*iapi.Modification, dgo.Value) {
 	parts := strings.Split(key, `.`)
 	pf := f.readData(parts)
 	if pf != nil {
-		return pf.Get(valueKey)
+		return nil, pf.Get(valueKey)
 	}
 	lp := len(parts) - 1
 	last := parts[lp]
 	parts = parts[:lp]
 	if lp > 0 {
 		if pf = f.readData(parts); pf == nil {
-			return nil
+			return nil, nil
 		}
 		if v := pf.Get(last); v != nil {
-			return v
+			return nil, v
 		}
 	}
 	if lp < len(f.hns) && last == f.hns[lp] {
@@ -86,13 +86,14 @@ func (f *fileStorage) Get(key string) dgo.Value {
 		if pf != nil {
 			children = children.Merge(pf.WithoutAll(vf.Values(valueKey)))
 		}
-		return children
+		return nil, children
 	}
-	return nil
+	return nil, nil
 }
 
-func (f *fileStorage) Query(key string, _ dgo.Map) (qr query.Result) {
-	switch v := f.Get(key).(type) {
+func (f *fileStorage) Query(key string, _ dgo.Map) (mods []*iapi.Modification, qr query.Result) {
+	mods, v := f.Get(key)
+	switch v := v.(type) {
 	case nil:
 	case dgo.Array:
 		qr = query.NewResult(false)
@@ -107,16 +108,20 @@ func (f *fileStorage) Query(key string, _ dgo.Map) (qr query.Result) {
 	default:
 		qr = query.NewSingleResult(v)
 	}
-	return
+	return mods, qr
 }
 
 func (f *fileStorage) QueryKeys(_ string) []query.Param {
 	return []query.Param{} // Not queryable at this time
 }
 
-func (f *fileStorage) Set(key string, model dgo.Map) (dgo.Map, error) {
+func (f *fileStorage) Refresh() []*iapi.Modification {
+	return []*iapi.Modification{}
+}
+
+func (f *fileStorage) Set(key string, model dgo.Map) ([]*iapi.Modification, error) {
 	if model.Len() == 0 {
-		return model, nil
+		return nil, nil
 	}
 	parts := strings.Split(key, `.`)
 	lp := len(parts) - 1
@@ -155,7 +160,7 @@ func (f *fileStorage) Set(key string, model dgo.Map) (dgo.Map, error) {
 		}
 	}
 	yaml.Write(path, pf)
-	return changes, nil
+	return nil, nil // TODO: Modification slice
 }
 
 func (f *fileStorage) createChild(parts []string) {

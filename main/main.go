@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"path/filepath"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/puppetlabs/inventory/bolt"
 
 	"github.com/jirenius/go-res"
@@ -17,8 +19,7 @@ func main() {
 	// Create a new RES Service
 	s := res.NewService(inventory.ServiceName)
 	p := setupTest()
-	is := inventory.NewService(bolt.NewStorage(p))
-	is.AddHandlers(s)
+	inventory.NewService(s, bolt.NewStorage(p))
 
 	// Start service in separate goroutine
 	stop := make(chan bool)
@@ -41,7 +42,8 @@ func main() {
 }
 
 func setupTest() string {
-	bytes, err := ioutil.ReadFile(filepath.Join(`testdata`, `static`, `bolt_inventory.yaml`))
+	logrus.SetLevel(logrus.DebugLevel)
+	bytes, err := ioutil.ReadFile(filepath.Join(`testdata`, `static`, `bolt_precedence.yaml`))
 	if err != nil {
 		panic(err)
 	}
@@ -52,7 +54,7 @@ func setupTest() string {
 			panic(err)
 		}
 	}
-	bs := filepath.Join(vd, `bolt_inventory.yaml`)
+	bs := filepath.Join(vd, `bolt_precedence.yaml`)
 	err = ioutil.WriteFile(bs, bytes, 0640)
 	if err != nil {
 		panic(err)

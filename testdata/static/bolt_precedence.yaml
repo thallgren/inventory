@@ -1,0 +1,28 @@
+version: 2
+groups:
+  - name: group1
+    targets:
+      - name: mytarget
+        uri: target.example.com
+        config:
+          ssh:
+            user: puppet
+        facts:
+          hardwaremodel: x86_64
+      - name: myothertarget
+        uri: target2.example.com
+    config:
+      ssh:
+        host-key-check: false
+  - name: group2
+    targets:
+      - name: mytarget
+        uri: target.example.com
+        config:
+          ssh:
+            password: bolt
+    config:
+      ssh:
+        password: password
+    facts:
+      operatingsystem: CentOS
