@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/puppetlabs/inventory/change"
+
 	"github.com/puppetlabs/inventory/query"
 
 	"github.com/gofrs/flock"
@@ -29,7 +31,7 @@ func NewStorage(dataDir string, hierarchyNames ...string) iapi.Storage {
 	return &fileStorage{dataDir: dataDir, hns: hierarchyNames}
 }
 
-func (f *fileStorage) Delete(key string) ([]*iapi.Modification, bool) {
+func (f *fileStorage) Delete(key string) ([]*change.Modification, bool) {
 	parts := strings.Split(key, `.`)
 	lp := len(parts) - 1
 	if lp < 1 {
@@ -63,7 +65,7 @@ func (f *fileStorage) Delete(key string) ([]*iapi.Modification, bool) {
 	return nil, false
 }
 
-func (f *fileStorage) Get(key string) ([]*iapi.Modification, dgo.Value) {
+func (f *fileStorage) Get(key string) ([]*change.Modification, dgo.Value) {
 	parts := strings.Split(key, `.`)
 	pf := f.readData(parts)
 	if pf != nil {
@@ -91,7 +93,7 @@ func (f *fileStorage) Get(key string) ([]*iapi.Modification, dgo.Value) {
 	return nil, nil
 }
 
-func (f *fileStorage) Query(key string, _ dgo.Map) (mods []*iapi.Modification, qr query.Result) {
+func (f *fileStorage) Query(key string, _ dgo.Map) (mods []*change.Modification, qr query.Result) {
 	mods, v := f.Get(key)
 	switch v := v.(type) {
 	case nil:
@@ -115,11 +117,11 @@ func (f *fileStorage) QueryKeys(_ string) []query.Param {
 	return []query.Param{} // Not queryable at this time
 }
 
-func (f *fileStorage) Refresh() []*iapi.Modification {
-	return []*iapi.Modification{}
+func (f *fileStorage) Refresh() []*change.Modification {
+	return []*change.Modification{}
 }
 
-func (f *fileStorage) Set(key string, model dgo.Map) ([]*iapi.Modification, error) {
+func (f *fileStorage) Set(key string, model dgo.Map) ([]*change.Modification, error) {
 	if model.Len() == 0 {
 		return nil, nil
 	}
@@ -130,7 +132,8 @@ func (f *fileStorage) Set(key string, model dgo.Map) ([]*iapi.Modification, erro
 	}
 	path := filepath.Join(f.dataDir, filepath.Join(parts...), `data.yaml`)
 
-	var pf, changes dgo.Map
+	var mods []*change.Modification
+	var pf dgo.Map
 	lock := flock.New(path)
 	err := lock.RLock()
 	if err == nil {
@@ -138,12 +141,7 @@ func (f *fileStorage) Set(key string, model dgo.Map) ([]*iapi.Modification, erro
 			_ = lock.Close()
 		}()
 		pf = yaml.Read(path).Copy(false) // read, then thaw frozen map
-		changes = vf.MutableMap()
-		model.EachEntry(func(e dgo.MapEntry) {
-			if !e.Value().Equals(pf.Put(e.Key(), e.Value())) {
-				changes.Put(e.Key(), e.Value())
-			}
-		})
+		mods = change.Map(key, pf, pf.Merge(model), mods)
 	} else {
 		if !os.IsNotExist(err) {
 			panic(err)
@@ -154,13 +152,13 @@ func (f *fileStorage) Set(key string, model dgo.Map) ([]*iapi.Modification, erro
 		if value := model.Get(valueKey); value != nil && model.Len() == 1 {
 			f.createChild(parts)
 			pf = model
-			changes = pf
+			mods = append(mods, &change.Modification{ResourceName: key, Type: change.Create, Value: model})
 		} else {
 			return nil, iapi.NotFound(key)
 		}
 	}
 	yaml.Write(path, pf)
-	return nil, nil // TODO: Modification slice
+	return mods, nil // TODO: Modification slice
 }
 
 func (f *fileStorage) createChild(parts []string) {

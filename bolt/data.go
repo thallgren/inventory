@@ -39,9 +39,6 @@ type Data interface {
 
 	// Name returns the name of this instance
 	Name() dgo.String
-
-	// Parent returns the Group that contains this Data or nil if this is the top-level
-	Parent() Group
 }
 
 type dta struct {
@@ -111,10 +108,6 @@ func (d *dta) Name() dgo.String {
 		return n
 	}
 	return nil
-}
-
-func (d *dta) Parent() Group {
-	return d.parent
 }
 
 func (d *dta) String() string {

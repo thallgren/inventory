@@ -104,21 +104,23 @@ func (t *trg) Features() dgo.Array {
 	return merged.Unique().Sort()
 }
 
-func (t *trg) registerTarget(all dgo.Map) {
-	if t.Name() == nil {
-		t.registerTargetWithName(all, t.URI())
-	} else {
-		t.registerTargetWithName(all, t.Name())
+func (t *trg) registerAlias(all dgo.Map) {
+	n := t.Name()
+	if n == nil {
+		n = t.URI()
 	}
-	t.Aliases().Each(func(n dgo.Value) { t.registerTargetWithName(all, n) })
+	t.Aliases().Each(func(a dgo.Value) { all.Put(a, n) })
 }
 
-func (t *trg) registerTargetWithName(all dgo.Map, n dgo.Value) {
-	a := all.Get(n)
-	if a == nil {
-		all.Put(n, vf.MutableValues(t))
+func (t *trg) registerTarget(all dgo.Map) {
+	n := t.Name()
+	if n == nil {
+		n = t.URI()
+	}
+	if a, ok := all.Get(n).(dgo.Array); ok {
+		a.Add(t)
 	} else {
-		a.(dgo.Array).Add(t)
+		all.Put(n, vf.MutableValues(t))
 	}
 }
 

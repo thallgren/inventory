@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/puppetlabs/inventory/change"
+
 	"github.com/lyraproj/dgo/dgo"
 	"github.com/lyraproj/dgo/tf"
 	"github.com/lyraproj/dgo/typ"
@@ -64,11 +66,14 @@ func init() {
 const minRefresh = time.Second * 1
 
 type storage struct {
-	lock     sync.Mutex
-	path     string
-	age      time.Time
-	contents Group   // the "all" group
-	targets  dgo.Map // resolved targets
+	lock            sync.Mutex
+	path            string    // Path to inventory file
+	age             time.Time // Time when file was read from disk
+	contents        Group     // the "all" group
+	targets         dgo.Map   // merged targets
+	unmergedTargets dgo.Map   // targets prior to merge. Map of name <=> array of targets
+	aliases         dgo.Map   // map of alias <=> target name
+	input           dgo.Map
 }
 
 // NewStorage creates a new storage for the bolt inventory version 2 file at the given path
@@ -76,66 +81,88 @@ func NewStorage(path string) iapi.Storage {
 	return &storage{path: path}
 }
 
-func (s *storage) Delete(_ string) ([]*iapi.Modification, bool) {
+func (s *storage) Delete(_ string) ([]*change.Modification, bool) {
 	panic("implement me")
 }
 
-func (s *storage) Get(key string) ([]*iapi.Modification, dgo.Value) {
+func (s *storage) Get(key string) ([]*change.Modification, dgo.Value) {
 	mods := s.Refresh()
-	value := s.dig(strings.Split(key, `.`), 0, s.targets)
+	parts := strings.Split(key, `.`)
+	var top dgo.Value
+	if parts[0] == `targets` {
+		parts = parts[1:]
+		top = s.targets.Values()
+	} else {
+		top = s.targets
+	}
+	value := dig(parts, top)
 	return mods, value
 }
 
-func (s *storage) dig(parts []string, depth int, c dgo.Value) dgo.Value {
-	n := len(parts) - depth
-	if n == 0 {
-		return c
-	}
-	v := getAtKey(c, parts, depth)
-	switch v.(type) {
-	case dgo.Map, dgo.Array:
-		if n > 1 {
-			v = s.dig(parts, depth+1, v)
-		}
-	}
-	return v
-}
-
-// getAtKey uses the given key to access a value in the given collection, which is assumed
-// to be a Map or an Array. The given key must be parsable to a positive integer in case the
-// collection is an Array. The function returns nil when no value is found.
-func getAtKey(c dgo.Value, parts []string, depth int) dgo.Value {
-	k := parts[depth]
-	if depth == 0 && parts[0] == `targets` {
-		return c
-	}
-	switch c := c.(type) {
-	case dgo.Array:
-		if i, err := strconv.Atoi(k); err == nil {
-			if i >= 0 && i < c.Len() {
-				return c.Get(i)
-			}
-		}
-	case dgo.Map:
-		return c.Get(k)
-	}
-	return nil
-}
-
-func (s *storage) Query(key string, q dgo.Map) ([]*iapi.Modification, query.Result) {
+func (s *storage) Query(key string, q dgo.Map) ([]*change.Modification, query.Result) {
 	mods, v := s.Get(key)
-	if a, ok := v.(dgo.Map); ok {
-		match := q.Get(`match`) // required parameter
-		rx := regexp.MustCompile(regexp.QuoteMeta(match.(dgo.String).GoString()))
-		qr := query.NewResult(false)
-		a.EachEntry(func(e dgo.MapEntry) {
-			if ks, ok := e.Key().(dgo.String); ok && rx.FindString(ks.GoString()) != `` {
-				qr.Add(ks, e.Value())
+	a, ok := v.(dgo.Array)
+	if !ok {
+		return mods, nil
+	}
+
+	var targetNames dgo.Map
+	if group := q.Get(`group`); group != nil {
+		targetNames = vf.MutableMap()
+		rx := regexp.MustCompile(regexp.QuoteMeta(group.String()))
+		for _, g := range s.contents.FindGroups(rx) {
+			s.unmergedTargets.EachEntry(func(e dgo.MapEntry) {
+				if e.Value().(dgo.Array).Any(func(t dgo.Value) bool { return t.(Target).HasParent(g) }) {
+					targetNames.Put(e.Key(), vf.True)
+				}
+			})
+		}
+	}
+
+	if match := q.Get(`match`); match != nil {
+		if targetNames == nil {
+			// No limitation on groups, so start with all targets
+			targetNames = vf.MapWithCapacity(s.unmergedTargets.Len(), nil)
+			s.unmergedTargets.EachKey(func(k dgo.Value) { targetNames.Put(k, vf.True) })
+		}
+
+		// limit targetNames using match regexp.
+		rx := regexp.MustCompile(regexp.QuoteMeta(match.String()))
+		sts := targetNames
+		targetNames = vf.MutableMap()
+		sts.EachKey(func(n dgo.Value) {
+			if rx.FindString(n.String()) != `` {
+				targetNames.Put(n, vf.True)
 			}
 		})
-		return mods, qr
+
+		// also match on aliases
+		s.aliases.EachEntry(func(e dgo.MapEntry) {
+			if rx.FindString(e.Key().String()) != `` && sts.ContainsKey(e.Value()) {
+				targetNames.Put(e.Value(), vf.True)
+			}
+		})
 	}
-	return mods, nil
+
+	if targetNames != nil && targetNames.Len() == 0 {
+		return mods, nil
+	}
+
+	qr := query.NewResult(false)
+	a.EachWithIndex(func(v dgo.Value, i int) {
+		m := v.(dgo.Map)
+		if targetNames != nil {
+			n := m.Get(nameV)
+			if n == nil {
+				n = m.Get(uriV)
+			}
+			if !targetNames.ContainsKey(n) {
+				return
+			}
+		}
+		qr.Add(vf.Integer(int64(i)), m)
+	})
+	return mods, qr
 }
 
 func (s *storage) QueryKeys(key string) []query.Param {
@@ -143,7 +170,8 @@ func (s *storage) QueryKeys(key string) []query.Param {
 	last := parts[len(parts)-1]
 	qks := map[string][]query.Param{
 		`targets`: {
-			query.NewParam(`match`, typ.String, true),
+			query.NewParam(`match`, typ.String, false),
+			query.NewParam(`group`, typ.String, false),
 		},
 		`groups`: {
 			query.NewParam(`match`, typ.String, true),
@@ -158,7 +186,7 @@ func (s *storage) QueryKeys(key string) []query.Param {
 // refreshContents read the inventory yaml file on disk if the cache is deemed to be out of date. The
 // cache is considered up to date if the last known state of the file is less than the value of the
 // const minRefresh, or if a new stat call shows that the file hasn't been updated.
-func (s *storage) Refresh() []*iapi.Modification {
+func (s *storage) Refresh() []*change.Modification {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -184,16 +212,28 @@ func (s *storage) Refresh() []*iapi.Modification {
 	return nil
 }
 
-func (s *storage) readInventory() []*iapi.Modification {
+func (s *storage) readInventory() []*change.Modification {
 	data := yaml.Read(s.path)
 	if !inventoryFileType.Instance(data) {
 		panic(tf.IllegalAssignment(inventoryFileType, data))
 	}
-	all := NewGroup(nil, data.With(nameV, `all`))
+
+	var mods []*change.Modification
+	input := data.With(nameV, `all`)
+	if s.input == nil {
+		s.input = input
+	} else {
+		mods = change.Map(``, s.input, input, nil)
+	}
+	all := NewGroup(nil, input)
 	ats := vf.MutableMap()
+	als := vf.MutableMap()
 	all.CollectTargets(ats)
-	all.ResolveStringTargets(ats)
+	all.CollectAliases(als)
+	all.ResolveStringTargets(als, ats)
+	s.unmergedTargets = ats
 	s.contents = all
+	s.aliases = als
 
 	// Send events to all target subscribers
 	ats = ats.Map(func(e dgo.MapEntry) interface{} {
@@ -201,166 +241,12 @@ func (s *storage) readInventory() []*iapi.Modification {
 	})
 	if s.targets == nil {
 		s.targets = ats
-		return []*iapi.Modification{}
+		return []*change.Modification{}
 	}
-	return modifyMap(``, s.targets, ats, nil)
+	return append(mods, change.Map(``, s.targets, ats, nil)...)
 }
 
-type keyBuilder struct {
-	strings.Builder
-}
-
-func (sb *keyBuilder) makeKey(p string, k string) string {
-	if p == `` {
-		return k
-	}
-	sb.Reset()
-	_, _ = sb.WriteString(p)
-	_ = sb.WriteByte('.')
-	_, _ = sb.WriteString(k)
-	return sb.String()
-}
-
-func isComplex(v dgo.Value) bool {
-	switch v.(type) {
-	case dgo.Map, dgo.Array:
-		return true
-	default:
-		return false
-	}
-}
-
-func modifyMap(p string, a, b dgo.Map, mods []*iapi.Modification) []*iapi.Modification {
-	changedProps := vf.MutableMap()
-	sb := &keyBuilder{}
-	var ktm dgo.Array
-	a.EachEntry(func(e dgo.MapEntry) {
-		if b.ContainsKey(e.Key()) {
-			return
-		}
-		if isComplex(e.Value()) {
-			mods = append(mods, &iapi.Modification{ResourceName: sb.makeKey(p, e.Key().String()), Type: iapi.Delete})
-		} else {
-			changedProps.Put(e.Key(), iapi.Deleted)
-		}
-		if ktm == nil {
-			ktm = vf.MutableValues()
-		}
-		ktm.Add(e.Key())
-	})
-	if ktm != nil {
-		a.RemoveAll(ktm)
-	}
-
-	b.EachEntry(func(e dgo.MapEntry) {
-		k := e.Key()
-		v := e.Value()
-		old := a.Get(k)
-		if v.Equals(old) {
-			return
-		}
-		sk := sb.makeKey(p, k.String())
-		switch old := old.(type) {
-		case nil:
-			if isComplex(e.Value()) {
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Value: v, Type: iapi.Create})
-			} else {
-				changedProps.Put(k, v)
-			}
-			a.Put(k, v)
-		case dgo.Map:
-			if nv, ok := v.(dgo.Map); ok {
-				mods = modifyMap(sk, old, nv, mods)
-			} else {
-				// Change from map to something else
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Type: iapi.Reset})
-				a.Put(k, v)
-			}
-		case dgo.Array:
-			if nv, ok := v.(dgo.Array); ok {
-				mods = modifyArray(sk, old, nv, mods)
-			} else {
-				// Change from array to something else
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Type: iapi.Reset})
-				a.Put(k, v)
-			}
-		default:
-			if isComplex(e.Value()) {
-				// Change from simple to complex
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Type: iapi.Reset})
-			} else {
-				changedProps.Put(k, v)
-			}
-			a.Put(k, v)
-		}
-	})
-	if changedProps.Len() > 0 {
-		mods = append(mods, &iapi.Modification{ResourceName: p, Value: changedProps, Type: iapi.Change})
-	}
-	return mods
-}
-
-func modifyArray(p string, a, b dgo.Array, mods []*iapi.Modification) []*iapi.Modification {
-	sb := &keyBuilder{}
-	if a.Len() > b.Len() {
-		t := a.Len()
-		for i := b.Len(); i < t; i++ {
-			if isComplex(a.Get(i)) {
-				mods = append(mods, &iapi.Modification{ResourceName: sb.makeKey(p, strconv.Itoa(i)), Type: iapi.Delete})
-			} else {
-				mods = append(mods, &iapi.Modification{ResourceName: p, Index: i, Type: iapi.Remove})
-			}
-		}
-	}
-
-	b.EachWithIndex(func(v dgo.Value, i int) {
-		var old dgo.Value
-		if i < a.Len() {
-			old = a.Get(i)
-			if v.Equals(old) {
-				return
-			}
-		}
-		sk := sb.makeKey(p, strconv.Itoa(i))
-		switch old := old.(type) {
-		case nil:
-			if isComplex(a.Get(i)) {
-				// Adding new resource
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Value: v, Type: iapi.Create})
-			} else {
-				mods = append(mods, &iapi.Modification{ResourceName: p, Index: i, Value: v, Type: iapi.Add})
-			}
-			a.Add(v)
-		case dgo.Map:
-			if nv, ok := v.(dgo.Map); ok {
-				mods = modifyMap(sk, old, nv, mods)
-			} else {
-				// Change from map to something else
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Type: iapi.Reset})
-				a.Set(i, v)
-			}
-		case dgo.Array:
-			if nv, ok := v.(dgo.Array); ok {
-				mods = modifyArray(sk, old, nv, mods)
-			} else {
-				// Change from array to something else
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Type: iapi.Reset})
-				a.Set(i, v)
-			}
-		default:
-			if isComplex(v) {
-				// Change from simple to complex
-				mods = append(mods, &iapi.Modification{ResourceName: sk, Type: iapi.Reset})
-			} else {
-				mods = append(mods, &iapi.Modification{ResourceName: p, Index: i, Value: v, Type: iapi.Set})
-			}
-			a.Set(i, v)
-		}
-	})
-	return mods
-}
-
-func (s *storage) Set(key string, model dgo.Map) (mods []*iapi.Modification, err error) {
+func (s *storage) Set(key string, model dgo.Map) (mods []*change.Modification, err error) {
 	mods = s.Refresh()
 	defer func() {
 		if pe := recover(); pe != nil {
@@ -377,4 +263,26 @@ func (s *storage) Set(key string, model dgo.Map) (mods []*iapi.Modification, err
 		}
 	}()
 	return
+}
+
+// dig will into the given value which must be a Map or an Array using the given keys in the given slice.
+// It is an error to call this method with an empty keys slice.
+func dig(keys []string, v dgo.Value) dgo.Value {
+	for _, key := range keys {
+		switch c := v.(type) {
+		case dgo.Array:
+			if i, err := strconv.Atoi(key); err == nil {
+				if i >= 0 && i < c.Len() {
+					v = c.Get(i)
+					continue
+				}
+			}
+		case dgo.Map:
+			v = c.Get(key)
+			continue
+		}
+		v = nil
+		break
+	}
+	return v
 }

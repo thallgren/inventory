@@ -18,6 +18,7 @@ import (
 func main() {
 	// Create a new RES Service
 	s := res.NewService(inventory.ServiceName)
+	s.SetLogger(logrus.StandardLogger())
 	p := setupTest()
 	inventory.NewService(s, bolt.NewStorage(p))
 

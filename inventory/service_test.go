@@ -63,7 +63,7 @@ func TestDeleteNode(t *testing.T) {
 func TestSetFact(t *testing.T) {
 	createNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`), t)
 	s, cl := createSession(volatileDir(), t)
-	set("inventory.realmY.nodeA", vf.Map(`n`, `value of n`), s, t)
+	set("inventory.realmY.nodeA", `change`, vf.Map(`n`, `value of n`), s, t)
 	shutdownSession(s, cl)
 	ensureNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`, `n`, `value of n`), t)
 }
@@ -72,7 +72,7 @@ func TestNewNode(t *testing.T) {
 	createNode(`realmY`, `nodeA`, vf.Map(`a`, `value of a`), t)
 	deleteNode(`realmY`, `nodeB`, t)
 	s, cl := createSession(volatileDir(), t)
-	set("inventory.realmY.nodeB", vf.Map(`__value`, `Node B`), s, t)
+	set("inventory.realmY.nodeB", `create`, vf.Map(`__value`, `Node B`), s, t)
 	shutdownSession(s, cl)
 	ensureNode(`realmY`, `nodeB`, vf.Map(), t)
 }
@@ -91,7 +91,7 @@ func createSession(dir string, t *testing.T) (*test.Session, chan struct{}) {
 	}
 	cl := make(chan struct{})
 
-	inventory.NewService(file.NewStorage(dir, `realms`, `nodes`, `facts`)).AddHandlers(r)
+	inventory.NewService(r, file.NewStorage(dir, `realms`, `nodes`, `facts`))
 
 	go func() {
 		defer s.StopServer()
@@ -174,12 +174,14 @@ type request struct {
 	Query      string              `json:"query,omitempty"`
 }
 
-func set(rid string, v dgo.Map, s *test.Session, t *testing.T) {
+func set(rid, ct string, v dgo.Map, s *test.Session, t *testing.T) {
 	t.Helper()
 	s.Request(`call.`+rid+`.set`, &request{Params: streamer.MarshalJSON(v, nil)})
 	msg := s.GetMsg(t)
-	require.Equal(t, msg.Subject, `event.`+rid+`.change`)
-	require.Equal(t, v, parseMessage(msg, `values`, s, t))
+	require.Equal(t, msg.Subject, `event.`+rid+`.`+ct)
+	if ct == `change` {
+		require.Equal(t, v, parseMessage(msg, `values`, s, t))
+	}
 }
 
 func remove(rid string, s *test.Session, t *testing.T) {

@@ -5,18 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
-
-	"github.com/sirupsen/logrus"
-
-	"github.com/puppetlabs/inventory/query"
 
 	"github.com/jirenius/go-res"
 	"github.com/lyraproj/dgo/dgo"
 	"github.com/lyraproj/dgo/streamer"
 	"github.com/lyraproj/dgo/vf"
+	"github.com/puppetlabs/inventory/change"
 	"github.com/puppetlabs/inventory/iapi"
+	"github.com/sirupsen/logrus"
 )
 
 // ServiceName is the name of the Resgate service
@@ -171,13 +168,13 @@ func (s *Service) doGet(r res.GetRequest, key string) {
 		dc := streamer.DataCollector()
 		streamer.New(nil, streamer.DefaultOptions()).Stream(result, dc)
 		v := dc.Value()
-		var iv interface{}
 		switch v := v.(type) {
 		case dgo.Array:
 			r.Collection(arrayToCollection(v, r.ResourceName()+`.`))
 		case dgo.Map:
 			r.Model(mapToModel(v, r.ResourceName()+`.`))
 		default:
+			var iv interface{}
 			vf.FromValue(v, &iv)
 			r.Model(&lookupResult{Value: iv})
 		}
@@ -220,44 +217,44 @@ func (s *Service) setHandler(r res.CallRequest) {
 	panic(errors.New(`unable to extract model from parameters`))
 }
 
-func (s *Service) modifications(mods []*iapi.Modification) {
+func (s *Service) modifications(mods []*change.Modification) {
 	for _, mod := range mods {
 		s.sendModificationEvent(mod)
 	}
 }
 
-func (s *Service) sendModificationEvent(mod *iapi.Modification) {
+func (s *Service) sendModificationEvent(mod *change.Modification) {
 	rid := prefix + mod.ResourceName
 	r, err := s.resService.Resource(rid)
 	if err != nil {
 		panic(err)
 	}
 	switch mod.Type {
-	case iapi.Delete:
+	case change.Delete:
 		logrus.Debugf(`Delete: %s`, rid)
 		r.DeleteEvent()
-	case iapi.Reset:
+	case change.Reset:
 		logrus.Debugf(`Reset: %s`, rid)
 		r.ResetEvent()
-	case iapi.Create:
+	case change.Create:
 		var v interface{}
 		vf.FromValue(mod.Value, &v)
 		logrus.Debugf(`Create: %s = %s`, rid, mod.Value.Type())
 		r.CreateEvent(v)
-	case iapi.Change:
+	case change.Change:
 		var m map[string]interface{}
 		vf.FromValue(mod.Value, &m)
 		logrus.Debugf(`Change: %s = %s`, rid, mod.Value.Type())
 		r.ChangeEvent(m)
-	case iapi.Add:
+	case change.Add:
 		var v interface{}
 		vf.FromValue(mod.Value, &v)
 		logrus.Debugf(`Add: %s[%d] = %s`, rid, mod.Index, mod.Value.Type())
 		r.AddEvent(v, mod.Index)
-	case iapi.Remove:
+	case change.Remove:
 		logrus.Debugf(`Remove: %s[%d]`, rid, mod.Index)
 		r.RemoveEvent(mod.Index)
-	case iapi.Set:
+	case change.Set:
 		// TODO: Some confusion here. What should be sent when a collection value is replaced?
 		//  see ticket: https://github.com/resgateio/resgate/issues/145
 		var v interface{}
@@ -266,71 +263,4 @@ func (s *Service) sendModificationEvent(mod *iapi.Modification) {
 		r.RemoveEvent(mod.Index)
 		r.AddEvent(v, mod.Index)
 	}
-}
-
-func arrayToCollection(a dgo.Array, path string) []interface{} {
-	s := make([]interface{}, a.Len())
-	a.EachWithIndex(func(value dgo.Value, index int) {
-		switch value.(type) {
-		case dgo.Map, dgo.Array:
-			s[index] = res.Ref(path + strconv.Itoa(index))
-		default:
-			vf.FromValue(value, &s[index])
-		}
-	})
-	return s
-}
-
-func mapToModel(m dgo.Map, path string) map[string]interface{} {
-	ms := make(map[string]interface{}, m.Len())
-	m.EachEntry(func(value dgo.MapEntry) {
-		v := value.Value()
-		ks := value.Key().(dgo.String).GoString()
-		switch v.(type) {
-		case dgo.Map, dgo.Array:
-			ms[ks] = res.Ref(path + ks)
-		default:
-			var is interface{}
-			vf.FromValue(v, &is)
-			ms[ks] = is
-		}
-	})
-	return ms
-}
-
-func queryToCollection(a query.Result, path string) []interface{} {
-	st := streamer.New(nil, streamer.DefaultOptions())
-	s := make([]interface{}, a.Len())
-	a.EachWithRefAndIndex(func(value, ref dgo.Value, index int) {
-		dc := streamer.DataCollector()
-		st.Stream(value, dc)
-		value = dc.Value()
-		switch value.(type) {
-		case dgo.Map, dgo.Array:
-			s[index] = res.Ref(path + ref.String())
-		default:
-			vf.FromValue(value, &s[index])
-		}
-	})
-	return s
-}
-
-func queryToModel(a query.Result, path string) map[string]interface{} {
-	st := streamer.New(nil, streamer.DefaultOptions())
-	ms := make(map[string]interface{}, a.Len())
-	a.EachWithRefAndIndex(func(value, ref dgo.Value, index int) {
-		rs := ref.(dgo.String).GoString()
-		dc := streamer.DataCollector()
-		st.Stream(value, dc)
-		value = dc.Value()
-		switch value.(type) {
-		case dgo.Map, dgo.Array:
-			ms[rs] = res.Ref(path + rs)
-		default:
-			var is interface{}
-			vf.FromValue(value, &is)
-			ms[rs] = is
-		}
-	})
-	return ms
 }
