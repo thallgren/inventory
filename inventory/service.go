@@ -255,7 +255,7 @@ func (s *Service) sendModificationEvent(mod *change.Modification) {
 		logrus.Debugf(`Remove: %s[%d]`, rid, mod.Index)
 		r.RemoveEvent(mod.Index)
 	case change.Set:
-		// TODO: Some confusion here. What should be sent when a collection value is replaced?
+		// NOTE: Some confusion here. What should be sent when a collection value is replaced?
 		//  see ticket: https://github.com/resgateio/resgate/issues/145
 		var v interface{}
 		vf.FromValue(mod.Value, &v)

@@ -99,6 +99,20 @@ func (s *storage) Get(key string) ([]*change.Modification, dgo.Value) {
 	return mods, value
 }
 
+func (s *storage) targetsInMatchedGroups(group string) dgo.Map {
+	targetNames := vf.MutableMap()
+	rx := regexp.MustCompile(regexp.QuoteMeta(group))
+	s.contents.FindGroups(rx).Each(func(gv dgo.Value) {
+		g := gv.(Group)
+		s.unmergedTargets.EachEntry(func(e dgo.MapEntry) {
+			if e.Value().(dgo.Array).Any(func(t dgo.Value) bool { return t.(Target).HasParent(g) }) {
+				targetNames.Put(e.Key(), vf.True)
+			}
+		})
+	})
+	return targetNames
+}
+
 func (s *storage) Query(key string, q dgo.Map) ([]*change.Modification, query.Result) {
 	mods, v := s.Get(key)
 	a, ok := v.(dgo.Array)
@@ -108,15 +122,7 @@ func (s *storage) Query(key string, q dgo.Map) ([]*change.Modification, query.Re
 
 	var targetNames dgo.Map
 	if group := q.Get(`group`); group != nil {
-		targetNames = vf.MutableMap()
-		rx := regexp.MustCompile(regexp.QuoteMeta(group.String()))
-		for _, g := range s.contents.FindGroups(rx) {
-			s.unmergedTargets.EachEntry(func(e dgo.MapEntry) {
-				if e.Value().(dgo.Array).Any(func(t dgo.Value) bool { return t.(Target).HasParent(g) }) {
-					targetNames.Put(e.Key(), vf.True)
-				}
-			})
-		}
+		targetNames = s.targetsInMatchedGroups(group.String())
 	}
 
 	if match := q.Get(`match`); match != nil {

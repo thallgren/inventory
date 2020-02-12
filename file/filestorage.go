@@ -158,7 +158,7 @@ func (f *fileStorage) Set(key string, model dgo.Map) ([]*change.Modification, er
 		}
 	}
 	yaml.Write(path, pf)
-	return mods, nil // TODO: Modification slice
+	return mods, nil
 }
 
 func (f *fileStorage) createChild(parts []string) {

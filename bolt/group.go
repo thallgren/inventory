@@ -35,7 +35,7 @@ type Group interface {
 	ResolveStringTargets(allAlias, allTargets dgo.Map)
 
 	// Find all groups with a name that matches the given regexp
-	FindGroups(rx *regexp.Regexp) []Group
+	FindGroups(rx *regexp.Regexp) dgo.Array
 }
 
 type group struct {
@@ -90,16 +90,17 @@ func NewGroup(parent Group, input dgo.Map) Group {
 	return g
 }
 
-func (g *group) FindGroups(rx *regexp.Regexp) []Group {
-	return g.matchGroups(rx, nil)
+func (g *group) FindGroups(rx *regexp.Regexp) dgo.Array {
+	groups := vf.MutableValues()
+	g.matchGroups(rx, groups)
+	return groups
 }
 
-func (g *group) matchGroups(rx *regexp.Regexp, groups []Group) []Group {
+func (g *group) matchGroups(rx *regexp.Regexp, groups dgo.Array) {
 	if rx.FindString(g.Name().String()) != `` {
-		groups = append(groups, g)
+		groups.Add(g)
 	}
-	g.LocalGroups().Each(func(gv dgo.Value) { groups = gv.(*group).matchGroups(rx, groups) })
-	return groups
+	g.LocalGroups().Each(func(gv dgo.Value) { gv.(*group).matchGroups(rx, groups) })
 }
 
 func (g *group) LocalGroups() dgo.Array {

@@ -34,6 +34,8 @@ const (
 	Set
 )
 
+// Deleted is a special value used in a Modification of type Change to denote that a property
+// was deleted.
 var Deleted = vf.Value(struct{ deleted bool }{true})
 
 // A Modification contains information a named thing that changed in a container, how it was changed
