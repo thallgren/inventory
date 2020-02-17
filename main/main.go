@@ -44,21 +44,30 @@ func main() {
 
 func setupTest() string {
 	logrus.SetLevel(logrus.DebugLevel)
-	bytes, err := ioutil.ReadFile(filepath.Join(`testdata`, `static`, `bolt_precedence.yaml`))
-	if err != nil {
-		panic(err)
-	}
-
 	vd := filepath.Join(`testdata`, `volatile`)
-	if err = os.MkdirAll(vd, 0750); err != nil {
+	err := os.MkdirAll(vd, 0750)
+	if err != nil {
 		if !os.IsExist(err) {
 			panic(err)
 		}
 	}
-	bs := filepath.Join(vd, `bolt_precedence.yaml`)
-	err = ioutil.WriteFile(bs, bytes, 0640)
+
+	sd := filepath.Join(`testdata`, `static`)
+	files, err := ioutil.ReadDir(sd)
 	if err != nil {
 		panic(err)
 	}
-	return bs
+	for _, f := range files {
+		/* #nosec */
+		bytes, err := ioutil.ReadFile(filepath.Join(sd, f.Name()))
+		if err != nil {
+			panic(err)
+		}
+		bs := filepath.Join(vd, f.Name())
+		err = ioutil.WriteFile(bs, bytes, 0640)
+		if err != nil {
+			panic(err)
+		}
+	}
+	return vd
 }

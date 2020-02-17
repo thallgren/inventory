@@ -34,7 +34,8 @@ type Group interface {
 	// beneath it. New resolved target instances are added to the allTargets Map.
 	ResolveStringTargets(allAlias, allTargets dgo.Map)
 
-	// Find all groups with a name that matches the given regexp
+	// Find all groups with a name that matches the given regexp. If regexp is nil, all targets
+	// are returned.
 	FindGroups(rx *regexp.Regexp) dgo.Array
 }
 
@@ -97,7 +98,7 @@ func (g *group) FindGroups(rx *regexp.Regexp) dgo.Array {
 }
 
 func (g *group) matchGroups(rx *regexp.Regexp, groups dgo.Array) {
-	if rx.FindString(g.Name().String()) != `` {
+	if rx == nil || rx.FindString(g.Name().String()) != `` {
 		groups.Add(g)
 	}
 	g.LocalGroups().Each(func(gv dgo.Value) { gv.(*group).matchGroups(rx, groups) })
