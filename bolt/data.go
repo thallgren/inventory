@@ -8,6 +8,7 @@ import (
 var configV = vf.String(`config`)
 var factsV = vf.String(`facts`)
 var featuresV = vf.String(`features`)
+var idV = vf.String(`id`)
 var nameV = vf.String(`name`)
 var varsV = vf.String(`vars`)
 

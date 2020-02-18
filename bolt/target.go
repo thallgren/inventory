@@ -3,8 +3,6 @@ package bolt
 import (
 	"reflect"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/lyraproj/dgo/dgo"
 	"github.com/lyraproj/dgo/tf"
 	"github.com/lyraproj/dgo/vf"
@@ -142,55 +140,4 @@ func (t *trg) Vars() dgo.Map {
 	}
 	merged.PutAll(t.LocalVars())
 	return merged
-}
-
-// MergeTargets creates a Map that contains the merged data from all given targets.
-func MergeTargets(targets dgo.Array) dgo.Map {
-	config := vf.Map()
-	facts := vf.Map()
-	features := vf.MutableValues()
-	vars := vf.MutableMap()
-	var name dgo.String
-	var uri dgo.String
-	targets.Each(func(tv dgo.Value) {
-		t := tv.(Target)
-		config = DeepMerge(config, t.Config())
-		facts = DeepMerge(facts, t.Facts())
-		features.AddAll(t.Features())
-		vars.PutAll(t.Vars())
-		if t.Name() != nil {
-			if name == nil {
-				name = t.Name()
-			} else if !name.Equals(t.Name()) {
-				logrus.Warnf(`target is using conflicting name's: %s != %s'`, name, t.Name())
-			}
-		}
-		if t.URI() != nil {
-			if uri == nil {
-				uri = t.URI()
-			} else if !uri.Equals(t.URI()) {
-				logrus.Warnf(`target %s is using conflicting URI's: %s != %s'`, name, uri, t.URI())
-			}
-		}
-	})
-	m := vf.MutableMap()
-	if name != nil {
-		m.Put(nameV, name)
-	}
-	if uri != nil {
-		m.Put(uriV, uri)
-	}
-	if config.Len() > 0 {
-		m.Put(configV, config)
-	}
-	if facts.Len() > 0 {
-		m.Put(factsV, facts)
-	}
-	if features.Len() > 0 {
-		m.Put(featuresV, features)
-	}
-	if vars.Len() > 0 {
-		m.Put(varsV, vars)
-	}
-	return m
 }

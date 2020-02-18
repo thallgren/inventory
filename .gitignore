@@ -69,3 +69,6 @@ fabric.properties
 *.tmp
 
 volatile/
+
+package-lock.json
+node_modules/

@@ -5,5 +5,13 @@
     <content url="file://$MODULE_DIR$" />
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="library" name="modapp-resource-component" level="application" />
+    <orderEntry type="library" name="modapp-base-component" level="application" />
+    <orderEntry type="library" name="resclient" level="application" />
+    <orderEntry type="library" name="modapp-resource-component" level="application" />
+    <orderEntry type="library" name="modapp-base-component" level="application" />
+    <orderEntry type="library" name="resclient" level="application" />
+    <orderEntry type="library" name="modapp-utils" level="application" />
+    <orderEntry type="library" name="modapp-utils" level="application" />
   </component>
 </module>

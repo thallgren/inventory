@@ -1,0 +1,329 @@
+const { RootElem } = window["modapp-base-component"];
+const { anim } = window['modapp-utils'];
+
+/**
+ * A component rendering a list of key/value paires based on a model
+ */
+class ModelList extends RootElem {
+
+    /**
+     * Creates an instance of ModelList
+     * @param {ResModel} model map of items
+     * @param {function} componentFactory  A factory function taking a model entry as argument, returning a component.
+     * @param {object} [opt] Optional parameters.
+     * @param {string} [opt.tagName] Tag name (eg. 'ul') for the element. Defaults to 'div'.
+     * @param {string} [opt.className] Class name
+     * @param {object} [opt.attributes] Key/value attributes object
+     * @param {object} [opt.events] Key/value events object, where the key is the event name, and value is the callback.
+     * @param {string} [opt.subTagName] Tag name (eg. 'li') for the element. Defaults to 'div'.
+     * @param {string} [opt.subClassName] A factory function taking a collection item as argument, returning the className for the component.
+     */
+    constructor(model, componentFactory, opt) {
+        opt = Object.assign({ tagName: 'div' }, opt);
+
+        super(opt.tagName, opt);
+
+        this.collection = null;
+        this.componentFactory = componentFactory;
+        this.subTagName = opt.subTagName || 'div';
+        this.subClassName = opt.subClassName || null;
+
+        this.components = null;
+        this.removedComponents = [];
+
+        this._change = this._change.bind(this);
+
+        this._rel = null; // Root elements node
+
+        this.setModel(model);
+    }
+
+    /**
+     * Sets the model.
+     * If the component is rendered, the list will be rerendered with
+     * the new collection, without any animation.
+     * @param {?model} model map of items
+     * @returns {this}
+     */
+    setModel(model) {
+        model = model || null;
+
+        if (model === this.model) {
+            return this;
+        }
+
+        if (!this._rel) {
+            this.model = model;
+            return this;
+        }
+
+        this._unrenderComponents();
+        this.model = model;
+        this._renderComponents();
+        this._checkSync();
+        return this;
+    }
+
+    /**
+     * Gets the current model
+     * @returns {?ResModel}
+     */
+    getModel() {
+        return this.model;
+    }
+
+    /**
+     * Get the component for a model by index
+     * @param {number} idx Index if model
+     * @returns {?Component} Model component, or null if the list isn't rendered, or if index is out of bounds
+     */
+    getComponent(idx) {
+        if (!this._rel) {
+            return null;
+        }
+
+        let cont = this.components[idx];
+        return cont ? cont.component : null;
+    }
+
+    /**
+     * Waits for the synchronization of the collection and component list to
+     * ensure the collection models matches the rendered components.
+     * Calling this method is necessary when calling getComponent after
+     * adding/removing items from the collections.
+     * Callback will never be called if the CollectionList isn't rendered, or
+     * if it unrenders before it has been synchronized.
+     * @param {function} callback Callback function called when collection and component list is synchronized.
+     */
+    sync(callback) {
+        if (!this._rel) {
+            return;
+        }
+
+        if (this._syncCallbacks) {
+            this._syncCallbacks.push(callback);
+        } else {
+            this._syncCallbacks = [ callback ];
+        }
+
+        this._checkSync();
+    }
+
+    render(el) {
+        this._rel = super.render(el);
+        this._renderComponents();
+        return this._rel;
+    }
+
+    unrender() {
+        this._unrenderComponents();
+        this._syncCallbacks = null;
+        super.unrender();
+        this._rel = null;
+    }
+
+    _checkSync() {
+        // No use checking syncronization if noone cares.
+        if (!this._syncCallbacks) {
+            return;
+        }
+
+        let i = 0, comp, len = this.components.length;
+        const props = this.model.props;
+        for(let key in props) {
+            // More models in the model than components
+            if (i === len) {
+                return;
+            }
+            comp = this.components[i++];
+            if (props[key] !== comp.model) {
+                return;
+            }
+        }
+
+        // Do we have more components?
+        if (i !== length) {
+            return;
+        }
+
+        // We are in sync
+        for (let cb of this._syncCallbacks) {
+            cb();
+        }
+        this._syncCallbacks = null;
+    }
+
+    _setSubClassName(item, li) {
+        if (this.subClassName) {
+            let className = this.subClassName(item);
+            if (className) {
+                li.className = className;
+            }
+        }
+    }
+
+    _renderComponents() {
+        if (!this.model) {
+            return;
+        }
+
+        this.components = [];
+        let idx = 0;
+
+        const props = this.model.props;
+        for(let key in props) {
+            const item = props[key]
+            let component = this.componentFactory(key, item);
+            let li = document.createElement(this.subTagName);
+            this.components.push({ item, component, li, idx, key });
+            idx++;
+            this._setSubClassName(item, li);
+
+            this._rel.appendChild(li);
+            if (component) {
+                component.render(li);
+            }
+        }
+
+        this._setEventListener(true);
+    }
+
+    _unrenderComponents() {
+        if (!this.model) {
+            return;
+        }
+
+        for (let cont of this.components) {
+            this._removeComponent(cont);
+        }
+        this.components = null;
+
+        for (let cont of this.removedComponents) {
+            this._removeComponent(cont);
+        }
+        this.removedComponents = [];
+
+        this._setEventListener(false);
+    }
+
+    // Callback when the model have a change event
+    _change(e) {
+        // Assert component wasn't unrendered by another event handler
+        if (!this._rel) {
+            return;
+        }
+
+        const props = this.model.props;
+
+        // for each key listed in the event, check what actually changed.
+        for(let key in e) {
+            // find component that corresponds to the key, if any.
+            let cont = null;
+            for (let ct of this.components) {
+                if(ct.key === key) {
+                    cont = ct;
+                    break;
+                }
+            }
+
+            const item = props[key];
+            let idx = -1;
+            if(cont !== null) {
+                this._remove(cont.idx);
+                if(item === undefined) {
+                    // item was removed
+                    continue;
+                }
+                idx = cont.idx;
+            } else {
+                // find index of new property in model
+                let pi = 0;
+                for(let pk in props) {
+                    if(pk === key) {
+                        idx = pi;
+                        break;
+                    }
+                    pi++;
+                }
+                if(idx < 0) {
+                    // not found? This should normally not happen since a remove would
+                    // have resulted in the removal of an existing component. In any case,
+                    // there's nothing to add.
+                    continue;
+                }
+            }
+
+            // add new component
+            let component = this.componentFactory(key, item);
+            let li = document.createElement(this.subTagName);
+            cont = {model: item, component, li, idx, key};
+            this.components.splice(idx, 0, cont);
+            this._setSubClassName(item, li);
+
+            li.style.display = 'none';
+            // Append last?
+            if (this.components.length - 1 === idx) {
+                this._rel.appendChild(li);
+            } else {
+                this._rel.insertBefore(li, this.components[idx + 1].li);
+            }
+
+            if (component) {
+                component.render(li);
+            }
+            cont.token = anim.slideVertical(li, true, { reset: true });
+        }
+        this._checkSync();
+    }
+
+
+    // called when the model entries are removed
+    _remove(idx) {
+        // Assert component wasn't unrendered by another event handler
+        if (!this._rel) {
+            return;
+        }
+
+        let cont = this.components[idx];
+        this.components.splice(idx, 1);
+        this.removedComponents.push(cont);
+
+        anim.stop(cont.token);
+        cont.token = anim.slideVertical(cont.li, false, {
+            callback: () => {
+                let idx = this.removedComponents.indexOf(cont);
+                if (idx >= 0) {
+                    this.removedComponents.splice(idx, 1);
+                    this._removeComponent(cont);
+                }
+            }
+        });
+
+        this._checkSync();
+    }
+
+    _removeComponent(cont) {
+        if (!this._rel) {
+            return;
+        }
+
+        let { token, component } = cont;
+        anim.stop(token);
+        if (component) {
+            component.unrender();
+        }
+
+        this._rel.removeChild(cont.li);
+    }
+
+    _setEventListener(on) {
+        if (this.model && this.model.on) {
+            if (on) {
+                this.model.on('change', this._change);
+            } else {
+                this.model.off('change', this._change);
+            }
+        }
+    }
+}
+export default ModelList

@@ -20,45 +20,31 @@ func IsComplex(v dgo.Value) bool {
 
 func modifyEntry(p string, a dgo.Map, e dgo.MapEntry, changedProps dgo.Map, mods []*Modification) []*Modification {
 	k := e.Key()
+	sk := p + `.` + k.String()
 	v := e.Value()
 	old := a.Get(k)
+	if old == nil {
+		// mods = append(mods, &Modification{ResourceName: p + `.` + k.String(), Value: v, Type: Create})
+		changedProps.Put(k, v)
+		a.Put(k, v)
+		return mods
+	}
+
 	if v.Equals(old) {
 		return mods
 	}
-	sk := p + `.` + k.String()
 	switch old := old.(type) {
-	case nil:
-		if IsComplex(e.Value()) {
-			mods = append(mods, &Modification{ResourceName: sk, Value: v, Type: Create})
-		} else {
-			changedProps.Put(k, v)
-		}
-		a.Put(k, v)
 	case dgo.Map:
 		if nv, ok := v.(dgo.Map); ok {
-			mods = Map(sk, old, nv, mods)
-		} else {
-			// Change from map to something else
-			mods = append(mods, &Modification{ResourceName: sk, Type: Reset})
-			a.Put(k, v)
+			return Map(sk, old, nv, mods)
 		}
 	case dgo.Array:
 		if nv, ok := v.(dgo.Array); ok {
-			mods = Array(sk, old, nv, mods)
-		} else {
-			// Change from array to something else
-			mods = append(mods, &Modification{ResourceName: sk, Type: Reset})
-			a.Put(k, v)
+			return Array(sk, old, nv, mods)
 		}
-	default:
-		if IsComplex(e.Value()) {
-			// Change from simple to complex
-			mods = append(mods, &Modification{ResourceName: sk, Type: Reset})
-		} else {
-			changedProps.Put(k, v)
-		}
-		a.Put(k, v)
 	}
+	a.Put(k, v)
+	changedProps.Put(k, v)
 	return mods
 }
 
@@ -68,19 +54,14 @@ func modifyEntry(p string, a dgo.Map, e dgo.MapEntry, changedProps dgo.Map, mods
 func Map(p string, a, b dgo.Map, mods []*Modification) []*Modification {
 	changedProps := vf.MutableMap()
 	var ktm dgo.Array
-	a.EachEntry(func(e dgo.MapEntry) {
-		if b.ContainsKey(e.Key()) {
-			return
+	a.EachKey(func(k dgo.Value) {
+		if !b.ContainsKey(k) {
+			changedProps.Put(k, Deleted)
+			if ktm == nil {
+				ktm = vf.MutableValues()
+			}
+			ktm.Add(k)
 		}
-		if IsComplex(e.Value()) {
-			mods = append(mods, &Modification{ResourceName: p + `.` + e.Key().String(), Type: Delete})
-		} else {
-			changedProps.Put(e.Key(), Deleted)
-		}
-		if ktm == nil {
-			ktm = vf.MutableValues()
-		}
-		ktm.Add(e.Key())
 	})
 	if ktm != nil {
 		a.RemoveAll(ktm)
@@ -93,64 +74,37 @@ func Map(p string, a, b dgo.Map, mods []*Modification) []*Modification {
 }
 
 func modifyElement(p string, a dgo.Array, i int, v dgo.Value, mods []*Modification) []*Modification {
-	var old dgo.Value
-	if i < a.Len() {
-		old = a.Get(i)
-		if v.Equals(old) {
-			return mods
-		}
-	}
-	sk := p + `.` + strconv.Itoa(i)
-	switch old := old.(type) {
-	case nil:
-		if IsComplex(a.Get(i)) {
-			// Adding new resource
-			mods = append(mods, &Modification{ResourceName: sk, Value: v, Type: Create})
-		} else {
-			mods = append(mods, &Modification{ResourceName: p, Index: i, Value: v, Type: Add})
-		}
+	if i >= a.Len() {
 		a.Add(v)
+		return append(mods, &Modification{ResourceName: p, Index: i, Value: v, Type: Add})
+	}
+
+	old := a.Get(i)
+	if v.Equals(old) {
+		return mods
+	}
+	switch old := old.(type) {
 	case dgo.Map:
 		if nv, ok := v.(dgo.Map); ok {
-			mods = Map(sk, old, nv, mods)
-		} else {
-			// Change from map to something else
-			mods = append(mods, &Modification{ResourceName: sk, Type: Reset})
-			a.Set(i, v)
+			return Map(p+`.`+strconv.Itoa(i), old, nv, mods)
 		}
 	case dgo.Array:
 		if nv, ok := v.(dgo.Array); ok {
-			mods = Array(sk, old, nv, mods)
-		} else {
-			// Change from array to something else
-			mods = append(mods, &Modification{ResourceName: sk, Type: Reset})
-			a.Set(i, v)
+			return Array(p+`.`+strconv.Itoa(i), old, nv, mods)
 		}
-	default:
-		if IsComplex(v) {
-			// Change from simple to complex
-			mods = append(mods, &Modification{ResourceName: sk, Type: Reset})
-		} else {
-			mods = append(mods, &Modification{ResourceName: p, Index: i, Value: v, Type: Set})
-		}
-		a.Set(i, v)
 	}
-	return mods
+	a.Set(i, v)
+	return append(mods, &Modification{ResourceName: p, Index: i, Value: v, Type: Set})
 }
 
 // Array will make array a equal to array b and append all modifications needed in order to do that
 // in the given mods slice. The new slice is returned. The string p is the resource name of the array
 // that is modified.
 func Array(p string, a, b dgo.Array, mods []*Modification) []*Modification {
-	if a.Len() > b.Len() {
-		t := a.Len()
-		for i := b.Len(); i < t; i++ {
-			if IsComplex(a.Get(i)) {
-				mods = append(mods, &Modification{ResourceName: p + `.` + strconv.Itoa(i), Type: Delete})
-			} else {
-				mods = append(mods, &Modification{ResourceName: p, Index: i, Type: Remove})
-			}
-		}
+	t := a.Len()
+	for i := b.Len(); i < t; i++ {
+		a.Remove(i)
+		mods = append(mods, &Modification{ResourceName: p, Index: i, Type: Remove})
 	}
 	b.EachWithIndex(func(v dgo.Value, i int) { mods = modifyElement(p, a, i, v, mods) })
 	return mods

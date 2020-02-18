@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/jirenius/go-res"
@@ -55,7 +56,7 @@ func (s *Service) getComplex(r res.GetRequest) {
 	key := r.ResourceName()
 	hk := key[valuePrefixLen:]
 	mods, result := s.storage.Get(hk)
-	s.modifications(mods)
+	s.Modifications(mods)
 	if result == nil {
 		r.NotFound()
 	} else {
@@ -139,7 +140,7 @@ func (s *Service) doQuery(r res.GetRequest, key string, query url.Values) {
 		return
 	}
 	mods, result := s.storage.Query(key, qvs)
-	s.modifications(mods)
+	s.Modifications(mods)
 	if result == nil {
 		r.NotFound()
 	} else {
@@ -161,7 +162,7 @@ func (s *Service) doQuery(r res.GetRequest, key string, query url.Values) {
 
 func (s *Service) doGet(r res.GetRequest, key string) {
 	mods, result := s.storage.Get(key)
-	s.modifications(mods)
+	s.Modifications(mods)
 	if result == nil {
 		r.NotFound()
 	} else {
@@ -188,7 +189,7 @@ func (s *Service) deleteHandler(r res.CallRequest) {
 		return
 	}
 	mods, ok := s.storage.Delete(key[prefixLen:])
-	s.modifications(mods)
+	s.Modifications(mods)
 	if ok {
 		r.DeleteEvent()
 		r.OK(nil)
@@ -208,7 +209,7 @@ func (s *Service) setHandler(r res.CallRequest) {
 		if err != nil {
 			panic(err)
 		}
-		s.modifications(mods)
+		s.Modifications(mods)
 
 		// Send success response
 		r.OK(nil)
@@ -217,7 +218,7 @@ func (s *Service) setHandler(r res.CallRequest) {
 	panic(errors.New(`unable to extract model from parameters`))
 }
 
-func (s *Service) modifications(mods []*change.Modification) {
+func (s *Service) Modifications(mods []*change.Modification) {
 	for _, mod := range mods {
 		s.sendModificationEvent(mod)
 	}
@@ -237,19 +238,24 @@ func (s *Service) sendModificationEvent(mod *change.Modification) {
 		logrus.Debugf(`Reset: %s`, rid)
 		r.ResetEvent()
 	case change.Create:
-		var v interface{}
-		vf.FromValue(mod.Value, &v)
-		logrus.Debugf(`Create: %s = %s`, rid, mod.Value.Type())
+		v := convertValue(rid, mod.Value)
+		logrus.Debugf(`Create: %s = %v`, rid, v)
 		r.CreateEvent(v)
 	case change.Change:
-		var m map[string]interface{}
-		vf.FromValue(mod.Value, &m)
-		logrus.Debugf(`Change: %s = %s`, rid, mod.Value.Type())
+		m := make(map[string]interface{})
+		mod.Value.(dgo.Map).EachEntry(func(e dgo.MapEntry) {
+			k := e.Key().String()
+			if e.Value() == change.Deleted {
+				m[k] = res.DeleteAction
+			} else {
+				m[k] = convertValue(rid+`.`+k, e.Value())
+			}
+		})
+		logrus.Debugf(`Change: %s = %v`, rid, m)
 		r.ChangeEvent(m)
 	case change.Add:
-		var v interface{}
-		vf.FromValue(mod.Value, &v)
-		logrus.Debugf(`Add: %s[%d] = %s`, rid, mod.Index, mod.Value.Type())
+		v := convertValue(rid+`.`+strconv.Itoa(mod.Index), mod.Value)
+		logrus.Debugf(`Add: %s[%d] = %v`, rid, mod.Index, v)
 		r.AddEvent(v, mod.Index)
 	case change.Remove:
 		logrus.Debugf(`Remove: %s[%d]`, rid, mod.Index)
@@ -257,10 +263,22 @@ func (s *Service) sendModificationEvent(mod *change.Modification) {
 	case change.Set:
 		// NOTE: Some confusion here. What should be sent when a collection value is replaced?
 		//  see ticket: https://github.com/resgateio/resgate/issues/145
-		var v interface{}
-		vf.FromValue(mod.Value, &v)
-		logrus.Debugf(`Set: %s[%d] = %s`, rid, mod.Index, mod.Value.Type())
+		v := convertValue(rid+`.`+strconv.Itoa(mod.Index), mod.Value)
+		logrus.Debugf(`Set: %s[%d] = %v`, rid, mod.Index, v)
 		r.RemoveEvent(mod.Index)
 		r.AddEvent(v, mod.Index)
 	}
+}
+
+func convertValue(key string, result dgo.Value) interface{} {
+	dc := streamer.DataCollector()
+	streamer.New(nil, streamer.DefaultOptions()).Stream(result, dc)
+	v := dc.Value()
+	var iv interface{}
+	if change.IsComplex(v) {
+		iv = res.Ref(key)
+	} else {
+		vf.FromValue(v, &iv)
+	}
+	return iv
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,7 +22,9 @@ func main() {
 	s := res.NewService(inventory.ServiceName)
 	s.SetLogger(logrus.StandardLogger())
 	p := setupTest()
-	inventory.NewService(s, bolt.NewStorage(p))
+	bs := bolt.NewStorage(p)
+	is := inventory.NewService(s, bs)
+	watcher := bs.Watch(is.Modifications)
 
 	// Start service in separate goroutine
 	stop := make(chan bool)
@@ -31,6 +35,11 @@ func main() {
 		}
 	}()
 
+	// Run a simple webserver to serve the client.
+	// This is only for the purpose of making the example easier to run.
+	go func() { log.Fatal(http.ListenAndServe(":8084", http.FileServer(http.Dir("wwwroot/")))) }()
+	fmt.Println("Client at: http://localhost:8084/")
+
 	// Wait for interrupt signal
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -38,26 +47,34 @@ func main() {
 	case <-c:
 		// Graceful stop
 		_ = s.Shutdown()
+		_ = watcher.Close()
 	case <-stop:
 	}
 }
 
 func setupTest() string {
 	logrus.SetLevel(logrus.DebugLevel)
-	vd := filepath.Join(`testdata`, `volatile`)
-	err := os.MkdirAll(vd, 0750)
+	testdata, err := filepath.Abs(filepath.Join(`..`, `..`, `testdata`))
+	if err != nil {
+		panic(err)
+	}
+	vd := filepath.Join(testdata, `volatile`)
+	err = os.MkdirAll(vd, 0750)
 	if err != nil {
 		if !os.IsExist(err) {
 			panic(err)
 		}
 	}
 
-	sd := filepath.Join(`testdata`, `static`)
+	sd := filepath.Join(testdata, `static`)
 	files, err := ioutil.ReadDir(sd)
 	if err != nil {
 		panic(err)
 	}
 	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
 		/* #nosec */
 		bytes, err := ioutil.ReadFile(filepath.Join(sd, f.Name()))
 		if err != nil {

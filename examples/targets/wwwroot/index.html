@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Bolt Targets Example</title>
+  <script src="https://unpkg.com/resclient@latest/dist/resclient.js"></script>
+  <script src="https://unpkg.com/modapp-utils@latest/dist/modapp-utils.js"></script>
+  <script src="https://unpkg.com/modapp-base-component@latest/dist/modapp-base-component.js"></script>
+  <script src="https://unpkg.com/modapp-resource-component@latest/dist/modapp-resource-component.js"></script>
+  <style>
+    body {
+      background: #eee;
+      font-family: Arial, Helvetica, sans-serif;
+      padding: 0;
+      margin: 0;
+    }
+    header {
+      background: #000;
+      color: #fff;
+      padding: 16px 1em;
+    }
+    h1 {
+      margin: 0;
+      padding: 0;
+      line-height: 32px;
+      font-size: 24px;
+    }
+    .keyPairs {
+      font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;
+      border-collapse: collapse;
+    }
+
+    .keyPairs td, .keyPairs th {
+      border: 1px solid #ddd;
+      padding: 4px;
+    }
+
+    .keyPairs tr:nth-child(even){background-color: #f2f2f2;}
+
+    .keyPairs tr:hover {background-color: #ddd;}
+
+    .keyPairs th {
+      padding-top: 4px;
+      padding-bottom: 4px;
+      text-align: left;
+      background-color: #aaa;
+      color: white;
+    }
+
+    .keyPairs th::after {
+      content: ":";
+    }
+
+    .keyPairs caption {
+      font-weight: bold;
+      color: #111;
+    }
+
+    .view dl {
+      border: 3px double #ccc;
+      padding: 0.5em;
+    }
+    .view dt {
+      float: left;
+      clear: left;
+      width: 100px;
+      text-align: right;
+      font-weight: bold;
+      color: #111;
+    }
+    .view  dt::after {
+      content: ":";
+    }
+    .view dd {
+      margin: 0 0 0 110px;
+      padding: 0 0 0.5em 0;
+    }
+    .top {
+      margin: 1em 1em;
+    }
+    .shadow {
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+    }
+    #targets {
+      max-width: 800px;
+      margin: 0 1em;
+    }
+    label {
+      margin: 0.5em 1em 0.5em 0;
+      font-weight: bold;
+    }
+    .new-container input { margin-right: 1em; }
+    #error-msg { color: #800 }
+    button {
+      display: inline-block;
+      border: none;
+      background: none;
+      color: #006;
+    }
+    button:hover { background: rgba(0,0,0,0.12); }
+    .list-item { padding: 8px 0; }
+    .card {
+      background: #fff;
+      padding: 1em 1em;
+      box-sizing: border-box;
+    }
+    .action { float: right }
+    .editing > .card { background: #eaeaff; }
+    .card > .edit { display: none; }
+    .editing > .card > .edit {	display: inherit; }
+    .editing > .card > .view {	display: none; }
+    .card h3 { margin: 0 0 8px 0; }
+    .card .realm { font-style: italic; }
+    .label {
+      display: inline-block;
+      width: 80px;
+      font-weight: bold;
+    }
+    .edit-input + .edit-input { margin-top: 4px; }
+  </style>
+</head>
+<body>
+<header class="shadow">
+  <h1>Target Collection Example</h1>
+</header>
+<div class="top">
+  <div id="error-msg"></div>
+</div>
+<hr>
+<div id="targets"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
