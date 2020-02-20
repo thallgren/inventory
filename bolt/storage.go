@@ -29,7 +29,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type BoltStorage interface {
+// Storage is an extension of the iapi.Storage interface that adds the ability to add a
+// Watcher to that detects changes to the underlying files.
+type Storage interface {
 	iapi.Storage
 
 	Watch(func([]*change.Modification)) *fsnotify.Watcher
@@ -94,14 +96,15 @@ type realm struct {
 	path            string    // Path to inventory file
 	age             time.Time // Time when file was read from disk
 	contents        Group     // the realm group
-	targets         dgo.Map   // merged targets
+	targets         dgo.Map   // merged targets, keyed by id
+	targetsByName   dgo.Map   // merged targets, keyed by name
 	unmergedTargets dgo.Map   // targets prior to merge. Map of name <=> array of targets
 	aliases         dgo.Map   // map of alias <=> target name
 	input           dgo.Map
 }
 
 // NewStorage creates a new storage for the bolt inventory version 2 file at the given path
-func NewStorage(path string) BoltStorage {
+func NewStorage(path string) Storage {
 	return &storage{path: path}
 }
 
@@ -384,7 +387,7 @@ func (s *storage) Set(key string, model dgo.Map) (mods []*change.Modification, e
 	if v != nil {
 		if t, ok := v.(dgo.Map); ok {
 			if id, ok := t.Get(idV).(dgo.String); ok {
-				rn, n := splitId(id.GoString())
+				rn, n := splitID(id.GoString())
 				if realm, ok := s.realmMap[rn]; ok {
 					return realm.applyChange(n, model)
 				}
@@ -394,11 +397,11 @@ func (s *storage) Set(key string, model dgo.Map) (mods []*change.Modification, e
 	return mods, iapi.NotFound(key)
 }
 
-func (r *realm) applyChange(targetId string, model dgo.Map) (mods []*change.Modification, err error) {
+func (r *realm) applyChange(targetID string, model dgo.Map) (mods []*change.Modification, err error) {
 	// if targets, ok := r.unmergedTargets.Get(targetId).(dgo.Array); ok {
 	//
 	// }
-	return nil, iapi.NotFound(targetId)
+	return nil, iapi.NotFound(targetID)
 }
 
 func (r *realm) get(parts []string) dgo.Value {
@@ -410,7 +413,7 @@ func (r *realm) get(parts []string) dgo.Value {
 		parts = parts[1:]
 		top = r.targets.Values()
 	} else {
-		top = r.targets
+		top = r.targetsByName
 	}
 	value := dig(parts, top)
 	return value
@@ -460,13 +463,12 @@ func (r *realm) Refresh() {
 		r.readInventory()
 	}
 	r.age = now
-	return
 }
 
 func (r *realm) readInventory() {
 	defer func() {
 		if e := recover(); e != nil {
-			logrus.Errorf(`unable to read inventory from %s: %s`, r.path)
+			logrus.Errorf(`unable to read inventory from %v: %s`, e, r.path)
 		}
 	}()
 
@@ -491,15 +493,21 @@ func (r *realm) readInventory() {
 	r.aliases = als
 
 	tgm := vf.MutableMap()
+	tgn := vf.MutableMap()
 	ats.EachEntry(func(e dgo.MapEntry) {
 		merged := r.mergeTargets(e.Value().(dgo.Array))
 		tgm.Put(merged.Get(idV), merged)
+		if name := merged.Get(nameV); name != nil {
+			tgn.Put(name, merged)
+		}
 	})
 	tgm.Freeze()
+	tgn.Freeze()
 	r.targets = tgm
+	r.targetsByName = tgn
 }
 
-func makeId(rn, name, uri dgo.String) string {
+func makeID(rn, name, uri dgo.String) string {
 	if name == nil {
 		if uri == nil {
 			panic(fmt.Errorf(`target in realm '%s' has no name and no uri`, rn))
@@ -507,12 +515,12 @@ func makeId(rn, name, uri dgo.String) string {
 		name = uri
 	}
 	b := bytes.NewBufferString(rn.GoString())
-	b.WriteByte('.')
-	b.WriteString(name.GoString())
+	_ = b.WriteByte('.')
+	_, _ = b.WriteString(name.GoString())
 	return base64.URLEncoding.EncodeToString(b.Bytes())
 }
 
-func splitId(id string) (string, string) {
+func splitID(id string) (string, string) {
 	v, err := base64.URLEncoding.DecodeString(id)
 	if err != nil {
 		panic(err)
@@ -556,7 +564,7 @@ func (r *realm) mergeTargets(targets dgo.Array) dgo.Map {
 	})
 	rn := r.contents.Name()
 	m := vf.MutableMap()
-	m.Put(idV, makeId(rn, name, uri))
+	m.Put(idV, makeID(rn, name, uri))
 	m.Put(realmV, rn)
 	if name != nil {
 		m.Put(nameV, name)

@@ -219,6 +219,8 @@ func (s *Service) setHandler(r res.CallRequest) {
 	panic(errors.New(`unable to extract model from parameters`))
 }
 
+// Modifications will send events to subscribers notifying them of the changes described in the
+// given Modifications slice.
 func (s *Service) Modifications(mods []*change.Modification) {
 	for _, mod := range mods {
 		s.sendModificationEvent(mod)

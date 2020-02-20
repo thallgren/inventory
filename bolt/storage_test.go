@@ -24,11 +24,13 @@ func TestQuery_group(t *testing.T) {
 	require.Equal(t,
 		vf.Values(
 			vf.Map(
+				`id`, `cmVhbG1fYS5tYzE=`,
 				`name`, `mc1`,
 				`realm`, `realm_a`,
 				`uri`, `192.168.101.50`,
 				`config`, vf.Map(`transport`, `ssh`, `ssh`, vf.Map(`user`, `root`))),
 			vf.Map(
+				`id`, `cmVhbG1fYS5tYzI=`,
 				`name`, `mc2`,
 				`realm`, `realm_a`,
 				`uri`, `192.168.101.60`,
@@ -42,10 +44,12 @@ func TestQuery_match(t *testing.T) {
 	require.Equal(t,
 		vf.Values(
 			vf.Map(
+				`id`, `cmVhbG1fYS4xNzIuMTYuMjE5LjIw`,
 				`realm`, `realm_a`,
 				`uri`, `172.16.219.20`,
 				`config`, vf.Map(`transport`, `winrm`, `winrm`, vf.Map(`realm`, `MYDOMAIN`, `ssl`, false))),
 			vf.Map(
+				`id`, `cmVhbG1fYS4xNzIuMTYuMjE5LjMw`,
 				`realm`, `realm_a`,
 				`uri`, `172.16.219.30`,
 				`config`, vf.Map(`transport`, `winrm`, `winrm`, vf.Map(`realm`, `MYDOMAIN`, `ssl`, false)))),
@@ -57,6 +61,8 @@ func TestGet_target(t *testing.T) {
 	_, v := b.Get(`realm_a.mc1`)
 	require.Equal(t,
 		vf.Map(
+			`id`, `cmVhbG1fYS5tYzE=`,
+			`realm`, `realm_a`,
 			`name`, `mc1`,
 			`uri`, `192.168.101.50`,
 			`config`, vf.Map(`transport`, `ssh`, `ssh`, vf.Map(`user`, `root`))),
