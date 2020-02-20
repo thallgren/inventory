@@ -77,6 +77,7 @@ func (s *Service) getComplex(r res.GetRequest) {
 
 func (s *Service) getHandler(r res.GetRequest) {
 	key := r.ResourceName()
+	logrus.Debugf("Get: %s", key)
 	if strings.HasPrefix(key, valuePrefix) {
 		s.getComplex(r)
 		return

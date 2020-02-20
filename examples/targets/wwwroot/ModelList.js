@@ -15,6 +15,8 @@ class ModelList extends RootElem {
      * @param {string} [opt.className] Class name
      * @param {object} [opt.attributes] Key/value attributes object
      * @param {object} [opt.events] Key/value events object, where the key is the event name, and value is the callback.
+     * @param {string[]} [opt.exclude] Arrays of keys to skip
+     * @param {string[]} [opt.include] Arrays of keys to include. If present, also determines order
      * @param {string} [opt.subTagName] Tag name (eg. 'li') for the element. Defaults to 'div'.
      * @param {string} [opt.subClassName] A factory function taking a collection item as argument, returning the className for the component.
      */
@@ -27,6 +29,8 @@ class ModelList extends RootElem {
         this.componentFactory = componentFactory;
         this.subTagName = opt.subTagName || 'div';
         this.subClassName = opt.subClassName || null;
+        this.exclude = opt.exclude || null;
+        this.include = opt.include || null;
 
         this.components = null;
         this.removedComponents = [];
@@ -122,28 +126,47 @@ class ModelList extends RootElem {
         this._rel = null;
     }
 
+    _orderedKeys() {
+        const props = this.model.props;
+        let keys;
+        const ic = this.include;
+        if(ic === null) {
+            keys = Reflect.ownKeys(props);
+            keys.sort();
+        } else {
+            keys = [];
+            for (let i = 0; i < ic.length; i++) {
+                const key = ic[i];
+                if (props.hasOwnProperty(key)) {
+                    keys.push(key);
+                }
+            }
+        }
+
+        const ex = this.exclude;
+        if(ex !== null) {
+            keys = keys.filter(function(key) { return ex.includes(key); })
+        }
+        return keys;
+    }
+
     _checkSync() {
         // No use checking syncronization if noone cares.
         if (!this._syncCallbacks) {
             return;
         }
 
-        let i = 0, comp, len = this.components.length;
-        const props = this.model.props;
-        for(let key in props) {
-            // More models in the model than components
-            if (i === len) {
-                return;
-            }
-            comp = this.components[i++];
-            if (props[key] !== comp.model) {
-                return;
-            }
+        const keys = this._orderedKeys();
+        if(keys.length !== this.components.length) {
+            return;
         }
 
-        // Do we have more components?
-        if (i !== length) {
-            return;
+        const props = this.model.props;
+        for(let i = 0; i < keys.length; i++) {
+            const comp = this.components[i];
+            if (props[keys[i]] !== comp.model) {
+                return;
+            }
         }
 
         // We are in sync
@@ -168,15 +191,14 @@ class ModelList extends RootElem {
         }
 
         this.components = [];
-        let idx = 0;
-
         const props = this.model.props;
-        for(let key in props) {
-            const item = props[key]
+        const keys = this._orderedKeys();
+        for(let idx = 0; idx < keys.length; idx++) {
+            const key = keys[idx];
+            const item = props[key];
             let component = this.componentFactory(key, item);
             let li = document.createElement(this.subTagName);
             this.components.push({ item, component, li, idx, key });
-            idx++;
             this._setSubClassName(item, li);
 
             this._rel.appendChild(li);
@@ -229,21 +251,20 @@ class ModelList extends RootElem {
             const item = props[key];
             let idx = -1;
             if(cont !== null) {
-                this._remove(cont.idx);
                 if(item === undefined) {
                     // item was removed
+                    this._remove(cont.idx);
                     continue;
                 }
                 idx = cont.idx;
             } else {
                 // find index of new property in model
-                let pi = 0;
-                for(let pk in props) {
-                    if(pk === key) {
+                const keys = this._orderedKeys();
+                for(let pi = 0; pi < keys.length; pi++) {
+                    if(keys[pi] === key) {
                         idx = pi;
                         break;
                     }
-                    pi++;
                 }
                 if(idx < 0) {
                     // not found? This should normally not happen since a remove would
@@ -253,25 +274,30 @@ class ModelList extends RootElem {
                 }
             }
 
-            // add new component
+            let li;
             let component = this.componentFactory(key, item);
-            let li = document.createElement(this.subTagName);
-            cont = {model: item, component, li, idx, key};
-            this.components.splice(idx, 0, cont);
-            this._setSubClassName(item, li);
+            if(cont === null) {
+                // add new component
+                li = document.createElement(this.subTagName);
+                cont = {model: item, component, li, idx, key};
+                this.components.splice(idx, 0, cont);
+                this._setSubClassName(item, li);
 
-            li.style.display = 'none';
-            // Append last?
-            if (this.components.length - 1 === idx) {
-                this._rel.appendChild(li);
-            } else {
-                this._rel.insertBefore(li, this.components[idx + 1].li);
-            }
-
-            if (component) {
+                li.style.display = 'none';
+                // Append last?
+                if (this.components.length - 1 === idx) {
+                    this._rel.appendChild(li);
+                } else {
+                    this._rel.insertBefore(li, this.components[idx + 1].li);
+                }
                 component.render(li);
+                cont.token = anim.slideVertical(li, true, { reset: true });
+            } else {
+                cont.component.unrender();
+                cont.component = component;
+                this.components[idx] = cont;
+                component.render(cont.li);
             }
-            cont.token = anim.slideVertical(li, true, { reset: true });
         }
         this._checkSync();
     }

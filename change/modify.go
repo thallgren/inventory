@@ -24,7 +24,9 @@ func modifyEntry(p string, a dgo.Map, e dgo.MapEntry, changedProps dgo.Map, mods
 	v := e.Value()
 	old := a.Get(k)
 	if old == nil {
-		// mods = append(mods, &Modification{ResourceName: p + `.` + k.String(), Value: v, Type: Create})
+		if IsComplex(v) {
+			mods = append(mods, &Modification{ResourceName: p + `.` + k.String(), Value: v, Type: Create})
+		}
 		changedProps.Put(k, v)
 		a.Put(k, v)
 		return mods
@@ -54,7 +56,8 @@ func modifyEntry(p string, a dgo.Map, e dgo.MapEntry, changedProps dgo.Map, mods
 func Map(p string, a, b dgo.Map, mods []*Modification) []*Modification {
 	changedProps := vf.MutableMap()
 	var ktm dgo.Array
-	a.EachKey(func(k dgo.Value) {
+	a.EachEntry(func(e dgo.MapEntry) {
+		k := e.Key()
 		if !b.ContainsKey(k) {
 			changedProps.Put(k, Deleted)
 			if ktm == nil {
@@ -63,12 +66,17 @@ func Map(p string, a, b dgo.Map, mods []*Modification) []*Modification {
 			ktm.Add(k)
 		}
 	})
-	if ktm != nil {
-		a.RemoveAll(ktm)
-	}
 	b.EachEntry(func(e dgo.MapEntry) { mods = modifyEntry(p, a, e, changedProps, mods) })
 	if changedProps.Len() > 0 {
 		mods = append(mods, &Modification{ResourceName: p, Value: changedProps, Type: Change})
+	}
+	if ktm != nil {
+		ktm.Each(func(k dgo.Value) {
+			if IsComplex(a.Get(k)) {
+				mods = append(mods, &Modification{ResourceName: p + `.` + k.String(), Type: Delete})
+			}
+		})
+		a.RemoveAll(ktm)
 	}
 	return mods
 }
