@@ -1,8 +1,5 @@
-import ModelList from "./ModelList.js";
-import Pair from "./Pair.js";
-
-const {Elem, Txt, Button, Input} = window["modapp-base-component"];
-const {CollectionList, ModelTxt, ModelComponent} = window["modapp-resource-component"];
+const {Elem, Txt} = window["modapp-base-component"];
+const {CollectionList, ModelList, Pair, ModelComponent} = window["modapp-resource-component"];
 const ResClient = resclient.default;
 const ResCollection = resclient.ResCollection;
 const ResModel = resclient.ResModel;
@@ -26,27 +23,29 @@ function makeRecursiveMapModel(n, model, caption) {
   }
   children.push(n.component(new ModelList(
     model,
-    (key, value) => makePair(n, key, value, 'th', 'td'),
+    (key, value) => makePair(key, value, 'th', 'td'),
     {tagName: 'tbody', subTagName: 'tr'})));
   return n.elem('div', [n.elem('table', {className: 'keyPairs'}, children)]);
 }
 
-function makePair(n, key, value, keyTag, valueTag) {
-  let td;
-  if (value instanceof ResModel) {
-    td = makeRecursiveMapModel(n, value)
-  } else if (value instanceof ResCollection) {
-    td = n.component(new CollectionList(values, value => {
-      if (value instanceof ResModel) {
-        return makeRecursiveMapModel(n, value);
-      } else {
-        return n.text(value)
-      }
-    }))
-  } else {
-    td = n.text(value)
-  }
-  return new Pair(n.elem(keyTag, {}, [n.text(key)]), n.elem(valueTag, {}, [td]))
+function makePair(key, value, keyTag, valueTag) {
+  return new Pair(n => n.elem(keyTag, {}, [n.text(key)]), n => {
+    let td;
+    if (value instanceof ResModel) {
+      td = makeRecursiveMapModel(n, value)
+    } else if (value instanceof ResCollection) {
+      td = n.component(new CollectionList(values, value => {
+        if (value instanceof ResModel) {
+          return makeRecursiveMapModel(n, value);
+        } else {
+          return n.text(value)
+        }
+      }))
+    } else {
+      td = n.text(value)
+    }
+    return n.elem(valueTag, {}, [td])
+  })
 }
 
 function topElems(target) {
@@ -55,7 +54,7 @@ function topElems(target) {
       n.elem('div', {className: 'card shadow'}, [
         n.component(new ModelList(
           target,
-          (key, value) => makePair(n, key, value, 'dt', 'dd'),
+          (key, value) => makePair(key, value, 'dt', 'dd'),
           {include: ['realm', 'name', 'uri', 'config', 'facts', 'vars', 'features'], className: 'view', tagName: 'dl', subTagName: 'div'}))])]);
   })
 }
