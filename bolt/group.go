@@ -91,6 +91,13 @@ func NewGroup(parent Group, input dgo.Map) Group {
 	return g
 }
 
+func (g *group) Equals(other interface{}) bool {
+	if og, ok := other.(*group); ok {
+		return g.input.Equals(og.input)
+	}
+	return false
+}
+
 func (g *group) FindGroups(rx *regexp.Regexp) dgo.Array {
 	groups := vf.MutableValues()
 	g.matchGroups(rx, groups)

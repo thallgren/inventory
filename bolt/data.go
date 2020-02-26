@@ -22,6 +22,9 @@ type Data interface {
 	// HasParent returns true if any of its parents is the given Group
 	HasParent(Group) bool
 
+	// The Map that backs this data
+	Input() dgo.Map
+
 	// LocalConfig returns the config from the input map held by this instance or
 	// an empty Map if no such config exists
 	LocalConfig() dgo.Map
@@ -70,6 +73,10 @@ func (d *dta) Equals(other interface{}) bool {
 
 func (d *dta) HashCode() int {
 	return d.input.HashCode()
+}
+
+func (d *dta) Input() dgo.Map {
+	return d.input
 }
 
 // LocalFeatures returns an immutable array of the features contained in this data

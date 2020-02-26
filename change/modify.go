@@ -36,6 +36,10 @@ func modifyEntry(p string, a dgo.Map, e dgo.MapEntry, changedProps dgo.Map, mods
 		return mods
 	}
 	switch old := old.(type) {
+	case Identifiable:
+		if nv, ok := v.(Identifiable); ok && old.ID() == nv.ID() {
+			return old.UpdateFrom(nv, mods)
+		}
 	case dgo.Map:
 		if nv, ok := v.(dgo.Map); ok {
 			return Map(sk, old, nv, mods)
@@ -92,6 +96,10 @@ func modifyElement(p string, a dgo.Array, i int, v dgo.Value, mods []*Modificati
 		return mods
 	}
 	switch old := old.(type) {
+	case Identifiable:
+		if nv, ok := v.(Identifiable); ok && old.ID() == nv.ID() {
+			return old.UpdateFrom(nv, mods)
+		}
 	case dgo.Map:
 		if nv, ok := v.(dgo.Map); ok {
 			return Map(p+`.`+strconv.Itoa(i), old, nv, mods)
@@ -105,15 +113,52 @@ func modifyElement(p string, a dgo.Array, i int, v dgo.Value, mods []*Modificati
 	return append(mods, &Modification{ResourceName: p, Index: i, Value: v, Type: Set})
 }
 
+func sameElement(a, b dgo.Value) bool {
+	if am, ok := a.(Identifiable); ok {
+		if bm, ok := b.(Identifiable); ok {
+			return am.ID() == bm.ID()
+		}
+	}
+	return a.Equals(b)
+}
+
 // Array will make array a equal to array b and append all modifications needed in order to do that
 // in the given mods slice. The new slice is returned. The string p is the resource name of the array
 // that is modified.
 func Array(p string, a, b dgo.Array, mods []*Modification) []*Modification {
-	t := a.Len()
-	for i := b.Len(); i < t; i++ {
-		a.Remove(i)
-		mods = append(mods, &Modification{ResourceName: p, Index: i, Type: Remove})
+	// Remove from end to start
+	for ix := a.Len() - 1; ix >= 0; ix-- {
+		ae := a.Get(ix)
+		if !b.Any(func(be dgo.Value) bool { return sameElement(ae, be) }) {
+			mods = append(mods, &Modification{ResourceName: p, Index: ix, Type: Remove})
+			a.Remove(ix)
+		}
 	}
+
+	b.EachWithIndex(func(be dgo.Value, i int) {
+		if !a.Any(func(ae dgo.Value) bool { return sameElement(ae, be) }) {
+			if i >= a.Len() {
+				i = a.Len()
+			}
+			mods = append(mods, &Modification{ResourceName: p, Index: i, Value: be, Type: Add})
+			a.Insert(i, be)
+		}
+	})
+
+	a.EachWithIndex(func(ae dgo.Value, i1 int) {
+		i2 := 0
+		b.Find(func(be dgo.Value) interface{} {
+			if i1 != i2 && sameElement(ae, be) {
+				mods = append(mods, &Modification{ResourceName: p, Index: i1, Type: Remove})
+				mods = append(mods, &Modification{ResourceName: p, Index: i2, Value: be, Type: Add})
+				a.Remove(i1)
+				a.Insert(i2, be)
+			}
+			i2++
+			return nil
+		})
+	})
+
 	b.EachWithIndex(func(v dgo.Value, i int) { mods = modifyElement(p, a, i, v, mods) })
 	return mods
 }

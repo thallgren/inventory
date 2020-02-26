@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/puppetlabs/inventory/iapi"
+
 	"github.com/lyraproj/dgo/dgo"
 	"github.com/puppetlabs/inventory/query"
 
@@ -58,7 +60,9 @@ func TestQuery_match(t *testing.T) {
 
 func TestGet_target(t *testing.T) {
 	b := bolt.NewStorage(staticDir())
-	_, v := b.Get(`realm_a.mc1`)
+	_, trg := b.Get(`realm_a.mc1`)
+	v, ok := trg.(iapi.Resource)
+	require.True(t, ok)
 	require.Equal(t,
 		vf.Map(
 			`id`, `cmVhbG1fYS5tYzE=`,
@@ -66,11 +70,11 @@ func TestGet_target(t *testing.T) {
 			`name`, `mc1`,
 			`uri`, `192.168.101.50`,
 			`config`, vf.Map(`transport`, `ssh`, `ssh`, vf.Map(`user`, `root`))),
-		v)
+		v.DataMap())
 }
 
 func staticDir() string {
-	return absTestDir(`static`)
+	return absTestDir(filepath.Join(`static`, `bolt`))
 }
 
 func absTestDir(dir string) string {
@@ -86,11 +90,18 @@ func queryResult(qr query.Result) dgo.Value {
 		return nil
 	}
 	if qr.Singleton() {
-		return qr.Value(0)
+		value := qr.Value(0)
+		if r, ok := value.(iapi.Resource); ok {
+			value = r.DataMap()
+		}
+		return value
 	}
 	if qr.IsMap() {
 		m := vf.MapWithCapacity(qr.Len())
 		qr.EachWithRefAndIndex(func(value, ref dgo.Value, index int) {
+			if r, ok := value.(iapi.Resource); ok {
+				value = r.DataMap()
+			}
 			m.Put(ref, value)
 		})
 		return m
@@ -98,6 +109,9 @@ func queryResult(qr query.Result) dgo.Value {
 
 	a := vf.ArrayWithCapacity(qr.Len())
 	qr.EachWithRefAndIndex(func(value, ref dgo.Value, index int) {
+		if r, ok := value.(iapi.Resource); ok {
+			value = r.DataMap()
+		}
 		a.Add(value)
 	})
 	return a

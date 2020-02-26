@@ -9,10 +9,10 @@ import (
 // recursively.
 func DeepMerge(a, b dgo.Map) dgo.Map {
 	if b.Len() == 0 {
-		return a
+		return a.Copy(false)
 	}
 	if a.Len() == 0 {
-		return b
+		return b.Copy(false)
 	}
 	a = a.Copy(false)
 	b.EachEntry(func(e dgo.MapEntry) {

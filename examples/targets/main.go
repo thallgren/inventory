@@ -9,12 +9,10 @@ import (
 	"os/signal"
 	"path/filepath"
 
-	"github.com/sirupsen/logrus"
-
-	"github.com/puppetlabs/inventory/bolt"
-
 	"github.com/jirenius/go-res"
+	"github.com/puppetlabs/inventory/bolt"
 	"github.com/puppetlabs/inventory/inventory"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -58,7 +56,7 @@ func setupTest() string {
 	if err != nil {
 		panic(err)
 	}
-	vd := filepath.Join(testdata, `volatile`)
+	vd := filepath.Join(testdata, `volatile`, `bolt`)
 	err = os.MkdirAll(vd, 0750)
 	if err != nil {
 		if !os.IsExist(err) {
@@ -66,7 +64,7 @@ func setupTest() string {
 		}
 	}
 
-	sd := filepath.Join(testdata, `static`)
+	sd := filepath.Join(testdata, `static`, `bolt`)
 	files, err := ioutil.ReadDir(sd)
 	if err != nil {
 		panic(err)

@@ -167,17 +167,18 @@ func (s *Service) doGet(r res.GetRequest, key string) {
 	if result == nil {
 		r.NotFound()
 	} else {
-		dc := streamer.DataCollector()
-		streamer.New(nil, streamer.DefaultOptions()).Stream(result, dc)
-		v := dc.Value()
-		switch v := v.(type) {
+		switch v := result.(type) {
 		case dgo.Array:
 			r.Collection(arrayToCollection(v, r.ResourceName()+`.`))
+		case iapi.Resource:
+			r.Model(mapToModel(v.DataMap(), r.ResourceName()+`.`))
 		case dgo.Map:
 			r.Model(mapToModel(v, r.ResourceName()+`.`))
 		default:
+			dc := streamer.DataCollector()
+			streamer.New(nil, streamer.DefaultOptions()).Stream(result, dc)
 			var iv interface{}
-			vf.FromValue(v, &iv)
+			vf.FromValue(dc.Value(), &iv)
 			r.Model(&lookupResult{Value: iv})
 		}
 	}
@@ -274,14 +275,16 @@ func (s *Service) sendModificationEvent(mod *change.Modification) {
 }
 
 func convertValue(key string, result dgo.Value) interface{} {
-	dc := streamer.DataCollector()
-	streamer.New(nil, streamer.DefaultOptions()).Stream(result, dc)
-	v := dc.Value()
 	var iv interface{}
-	if change.IsComplex(v) {
+	switch v := result.(type) {
+	case iapi.Resource:
+		iv = res.Ref(v.RID(ServiceName))
+	case dgo.Map, dgo.Array:
 		iv = res.Ref(key)
-	} else {
-		vf.FromValue(v, &iv)
+	default:
+		dc := streamer.DataCollector()
+		streamer.New(nil, streamer.DefaultOptions()).Stream(result, dc)
+		vf.FromValue(dc.Value(), &iv)
 	}
 	return iv
 }

@@ -3,7 +3,7 @@ package inventory
 import (
 	"strconv"
 
-	"github.com/puppetlabs/inventory/change"
+	"github.com/puppetlabs/inventory/iapi"
 
 	"github.com/jirenius/go-res"
 	"github.com/lyraproj/dgo/dgo"
@@ -17,9 +17,12 @@ import (
 func arrayToCollection(a dgo.Array, path string) []interface{} {
 	s := make([]interface{}, a.Len())
 	a.EachWithIndex(func(value dgo.Value, index int) {
-		if change.IsComplex(value) {
+		switch value := value.(type) {
+		case iapi.Resource:
+			s[index] = res.Ref(value.RID(ServiceName))
+		case dgo.Map, dgo.Array:
 			s[index] = res.Ref(path + strconv.Itoa(index))
-		} else {
+		default:
 			vf.FromValue(value, &s[index])
 		}
 	})
@@ -31,12 +34,14 @@ func arrayToCollection(a dgo.Array, path string) []interface{} {
 func mapToModel(m dgo.Map, path string) map[string]interface{} {
 	ms := make(map[string]interface{}, m.Len())
 	m.EachEntry(func(value dgo.MapEntry) {
-		v := value.Value()
 		ks := value.Key().(dgo.String).GoString()
 		var is interface{}
-		if change.IsComplex(v) {
+		switch v := value.Value().(type) {
+		case iapi.Resource:
+			is = res.Ref(v.RID(ServiceName))
+		case dgo.Map, dgo.Array:
 			is = res.Ref(path + ks)
-		} else {
+		default:
 			vf.FromValue(v, &is)
 		}
 		ms[ks] = is
@@ -52,10 +57,12 @@ func queryToCollection(a query.Result, path string) []interface{} {
 	a.EachWithRefAndIndex(func(value, ref dgo.Value, index int) {
 		dc := streamer.DataCollector()
 		st.Stream(value, dc)
-		value = dc.Value()
-		if change.IsComplex(value) {
+		switch value := dc.Value().(type) {
+		case iapi.Resource:
+			s[index] = res.Ref(value.RID(ServiceName))
+		case dgo.Map, dgo.Array:
 			s[index] = res.Ref(path + ref.String())
-		} else {
+		default:
 			vf.FromValue(value, &s[index])
 		}
 	})
@@ -71,11 +78,13 @@ func queryToModel(a query.Result, path string) map[string]interface{} {
 		rs := ref.(dgo.String).GoString()
 		dc := streamer.DataCollector()
 		st.Stream(value, dc)
-		value = dc.Value()
 		var is interface{}
-		if change.IsComplex(value) {
+		switch value := dc.Value().(type) {
+		case iapi.Resource:
+			is = res.Ref(value.RID(ServiceName))
+		case dgo.Map, dgo.Array:
 			is = res.Ref(path + rs)
-		} else {
+		default:
 			vf.FromValue(value, &is)
 		}
 		ms[rs] = is

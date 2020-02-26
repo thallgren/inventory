@@ -34,6 +34,15 @@ const (
 	Set
 )
 
+// Identifiable is by instances that can be uniquely identified.
+type Identifiable interface {
+	// ID returns the unique identifier
+	ID() string
+
+	// Update this instance from another instance and append the modifications
+	UpdateFrom(other Identifiable, mods []*Modification) []*Modification
+}
+
 // Deleted is a special value used in a Modification of type Change to denote that a property
 // was deleted.
 var Deleted = vf.Value(struct{ deleted bool }{true})

@@ -18,6 +18,18 @@ func (n NotFound) Error() string {
 	return fmt.Sprintf(`key %q not found`, string(n))
 }
 
+// Resource is implemented by storage entities that can be uniquely identified within
+// the storage using an resource ID.
+type Resource interface {
+	change.Identifiable
+
+	// RID returns a resource id using the given service name
+	RID(serviceName string) string
+
+	// DataMap returns the map backing this instance
+	DataMap() dgo.Map
+}
+
 // A Storage is some kind of database capable of storing a hierarchy of arbitrary depth. An item
 // is associated with a dot delimited key. Elements in arrays are access using numeric segments in
 // such keys.

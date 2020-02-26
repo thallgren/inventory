@@ -2,10 +2,8 @@
 package bolt
 
 import (
-	"bytes"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -43,10 +41,13 @@ var asciiPattern = tf.Pattern(regexp.MustCompile(`\A[[:ascii:]]+\z`))
 var dataMap = tf.Map(asciiPattern, tf.Parse(`data`))
 
 func init() {
+	// Add dgo types used for validity checking of the inventory files
 	tf.AddDefaultAliases(func(am dgo.AliasAdder) {
 		am.Add(namePattern, vf.String(`namePattern`))
 		am.Add(asciiPattern, vf.String(`asciiPattern`))
 		am.Add(dataMap, vf.String(`dataMap`))
+
+		// The targetMap type describes a target
 		tf.ParseFile(am, `internal`, `targetMap={
 			alias?: namePattern|[]namePattern,
 			config?: dataMap,
@@ -57,6 +58,7 @@ func init() {
 			vars?: dataMap
 		}`)
 
+		// The groupMap type describes a group
 		tf.ParseFile(am, `internal`, `groupMap={
 			config?: dataMap,
 			facts?: dataMap,
@@ -67,6 +69,7 @@ func init() {
 			vars?: dataMap,
 		}`)
 
+		// The inventoryMap type describes the inventory file
 		inventoryFileType = tf.ParseFile(am, `internal`, `inventoryMap={
 			version: 2,
 			config?: dataMap,
@@ -80,16 +83,18 @@ func init() {
 }
 
 const minRefresh = time.Second * 1
+const target = `target`
 const targets = `targets`
 
 var realmV = vf.String(`realm`)
 
 type storage struct {
-	lock     sync.Mutex
-	path     string            // Path to directory containing inventory files
-	age      time.Time         // Time when directory was checked for new realms
-	realmMap map[string]*realm // the realms. One per inventory file
-	targets  dgo.Array
+	lock       sync.Mutex
+	path       string            // Path to directory containing inventory files
+	age        time.Time         // Time when directory was checked for new realms
+	realmMap   map[string]*realm // the realms. One per inventory file
+	targets    dgo.Array         // all merged targets as an array
+	targetByID dgo.Map           // all merged, keyed by id
 }
 
 type realm struct {
@@ -113,20 +118,30 @@ func (s *storage) Delete(_ string) ([]*change.Modification, bool) {
 }
 
 func (s *storage) Get(key string) ([]*change.Modification, dgo.Value) {
-	mods := s.Refresh()
+	mods := s.refresh()
 	parts := strings.Split(key, `.`)
 	if len(parts) == 0 {
 		return mods, nil
 	}
 	var result dgo.Value
 	p0 := parts[0]
-	if p0 == targets {
+	switch p0 {
+	case target:
+		if len(parts) >= 2 {
+			result = s.targetByID.Get(parts[1])
+			if result != nil && len(parts) > 2 {
+				result = dig(parts[2:], result)
+			}
+		}
+	case targets:
 		result = s.targets
 		if len(parts) > 1 {
 			result = dig(parts[1:], result)
 		}
-	} else if realm, ok := s.realmMap[p0]; ok {
-		result = realm.get(parts[1:])
+	default:
+		if realm, ok := s.realmMap[p0]; ok {
+			result = realm.get(parts[1:])
+		}
 	}
 	return mods, result
 }
@@ -192,10 +207,10 @@ func (s *storage) Query(key string, q dgo.Map) ([]*change.Modification, query.Re
 
 	qr := query.NewResult(false)
 	a.EachWithIndex(func(v dgo.Value, i int) {
-		m := v.(dgo.Map)
-		n := m.Get(nameV)
+		m := v.(Target)
+		n := m.Name()
 		if n == nil {
-			n = m.Get(uriV)
+			n = m.URI()
 		}
 		if !targetNames.ContainsKey(n) {
 			return
@@ -224,34 +239,42 @@ func (s *storage) QueryKeys(key string) []query.Param {
 	}
 }
 
+func (s *storage) watchFunc(watcher *fsnotify.Watcher, onModify func([]*change.Modification)) {
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			switch {
+			case !ok:
+				return
+			case event.Op&(fsnotify.Write) != 0:
+				if strings.HasSuffix(event.Name, `.yaml`) {
+					mods := s.refreshRealms()
+					if len(mods) > 0 {
+						onModify(mods)
+					}
+				}
+			case event.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0:
+				mods := s.refresh()
+				if len(mods) > 0 {
+					onModify(mods)
+				}
+			}
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			logrus.Error("error:", err)
+		}
+	}
+}
+
 func (s *storage) Watch(onModify func([]*change.Modification)) *fsnotify.Watcher {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		panic(err)
 	}
-	go func() {
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					if strings.HasSuffix(event.Name, `.yaml`) {
-						mods := s.Refresh()
-						if len(mods) > 0 {
-							onModify(mods)
-						}
-					}
-				}
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				logrus.Error("error:", err)
-			}
-		}
-	}()
+	go s.watchFunc(watcher, onModify)
 
 	err = watcher.Add(s.path)
 	if err != nil {
@@ -260,54 +283,22 @@ func (s *storage) Watch(onModify func([]*change.Modification)) *fsnotify.Watcher
 	return watcher
 }
 
-func (s *storage) Refresh() []*change.Modification {
+func (s *storage) refresh() []*change.Modification {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	now := time.Now()
-	if s.realmMap == nil {
-		s.age = now
-		logrus.Debugf("dir %s initialized at: %s", s.path, s.age)
-		s.readRealms()
-		return nil
-	}
-
-	if now.Sub(s.age) < minRefresh {
-		return nil
-	}
-
-	cs, err := os.Stat(s.path)
-	if err != nil {
-		panic(err)
-	}
-
-	if cs.ModTime().After(s.age) {
-		s.age = now
-		logrus.Debugf("dir %s modified at: %s, last refresh at: %s", s.path, cs.ModTime(), s.age)
-		return s.readRealms()
-	}
-
-	s.age = now
-	all := vf.MutableMap()
-	for _, realm := range s.realms() {
-		realm.Refresh()
-		all.PutAll(realm.targets)
-	}
-	logrus.Debugf("dir %s modified at: %s, last refresh at: %s", s.path, cs.ModTime(), s.age)
-	return change.Array(`targets`, s.targets, all.Values(), nil)
-}
-
-func (s *storage) readRealms() []*change.Modification {
 	fis, err := ioutil.ReadDir(s.path)
 	if err != nil {
 		panic(err)
 	}
 
-	if s.realmMap == nil {
+	initial := s.realmMap == nil
+	if initial {
 		s.realmMap = make(map[string]*realm, len(fis))
 	}
 
-	fns := make(map[string]bool, len(fis))
+	fiNames := make(map[string]bool, len(fis))
+	changed := false
 	for _, fi := range fis {
 		if fi.IsDir() {
 			continue
@@ -322,28 +313,61 @@ func (s *storage) readRealms() []*change.Modification {
 			continue
 		}
 
-		fns[rn] = true
-		var r *realm
-		var ok bool
-		if r, ok = s.realmMap[rn]; ok {
-			r.Refresh()
-		} else {
-			r = &realm{path: filepath.Join(s.path, fi.Name())}
-			r.Refresh()
-			s.realmMap[rn] = r
+		fiNames[rn] = true
+		if _, ok := s.realmMap[rn]; !ok {
+			rp := filepath.Join(s.path, fi.Name())
+			s.realmMap[rn] = &realm{path: rp}
+			logrus.Debugf("added file %s as realm %s", rp, rn)
+			changed = true
 		}
 	}
 
+	for _, rn := range s.realmNames() {
+		if !fiNames[rn] {
+			logrus.Debugf("removed realm %s", rn)
+			delete(s.realmMap, rn)
+			changed = true
+		}
+	}
+
+	mods := s.readRealms(changed)
+	if initial {
+		logrus.Debugf("dir %s initialized at: %s", s.path, s.age)
+		mods = nil
+	}
+	return mods
+}
+
+func (s *storage) refreshRealms() []*change.Modification {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return s.readRealms(false)
+}
+
+func (s *storage) readRealms(changed bool) []*change.Modification {
 	all := vf.MutableMap()
-	for _, realm := range s.realms() {
-		realm.Refresh()
+	for _, realmName := range s.realmNames() {
+		realm := s.realmMap[realmName]
+		if realm.refresh() {
+			changed = true
+			if realm.targets == nil {
+				logrus.Debugf("removed realm %s", realmName)
+				delete(s.realmMap, realmName)
+				continue
+			}
+		}
 		all.PutAll(realm.targets.Copy(false))
 	}
+
+	s.targetByID = all
 	if s.targets == nil {
 		s.targets = all.Values()
 		return nil
 	}
-	return change.Array(`targets`, s.targets, all.Values(), nil)
+	if changed {
+		return change.Array(`targets`, s.targets, all.Values(), nil)
+	}
+	return nil
 }
 
 // realmNames returns all realm names alphabetically sorted
@@ -442,27 +466,35 @@ func (r *realm) matchingTargets(groupNamePattern *regexp.Regexp, targetNames dgo
 // refreshContents read the inventory yaml file on disk if the cache is deemed to be out of date. The
 // cache is considered up to date if the last known state of the file is less than the value of the
 // const minRefresh, or if a new stat call shows that the file hasn't been updated.
-func (r *realm) Refresh() {
+func (r *realm) refresh() bool {
 	now := time.Now()
 	if r.contents == nil {
 		r.age = now
 		r.readInventory()
+		return true
 	}
 
 	if now.Sub(r.age) < minRefresh {
-		return
+		return false
 	}
 
 	cs, err := os.Stat(r.path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			r.targets = nil // Gone
+			return true
+		}
 		panic(err)
 	}
 
 	if cs.ModTime().After(r.age) {
+		logrus.Debugf("file %s modified at: %s, last refresh at: %s", r.path, cs.ModTime(), r.age)
 		r.age = now
 		r.readInventory()
+		return true
 	}
 	r.age = now
+	return false
 }
 
 func (r *realm) readInventory() {
@@ -496,8 +528,8 @@ func (r *realm) readInventory() {
 	tgn := vf.MutableMap()
 	ats.EachEntry(func(e dgo.MapEntry) {
 		merged := r.mergeTargets(e.Value().(dgo.Array))
-		tgm.Put(merged.Get(idV), merged)
-		if name := merged.Get(nameV); name != nil {
+		tgm.Put(merged.ID(), merged)
+		if name := merged.Name(); name != nil {
 			tgn.Put(name, merged)
 		}
 	})
@@ -505,19 +537,6 @@ func (r *realm) readInventory() {
 	tgn.Freeze()
 	r.targets = tgm
 	r.targetsByName = tgn
-}
-
-func makeID(rn, name, uri dgo.String) string {
-	if name == nil {
-		if uri == nil {
-			panic(fmt.Errorf(`target in realm '%s' has no name and no uri`, rn))
-		}
-		name = uri
-	}
-	b := bytes.NewBufferString(rn.GoString())
-	_ = b.WriteByte('.')
-	_, _ = b.WriteString(name.GoString())
-	return base64.URLEncoding.EncodeToString(b.Bytes())
 }
 
 func splitID(id string) (string, string) {
@@ -533,63 +552,6 @@ func splitID(id string) (string, string) {
 	return vs[:di], vs[di+1:]
 }
 
-// mergeTargets creates a Map that contains the merged data from all given targets.
-func (r *realm) mergeTargets(targets dgo.Array) dgo.Map {
-	config := vf.Map()
-	facts := vf.Map()
-	features := vf.MutableValues()
-	vars := vf.MutableMap()
-	var name dgo.String
-	var uri dgo.String
-	targets.Each(func(tv dgo.Value) {
-		t := tv.(Target)
-		config = DeepMerge(config, t.Config())
-		facts = DeepMerge(facts, t.Facts())
-		features.AddAll(t.Features())
-		vars.PutAll(t.Vars())
-		if t.Name() != nil {
-			if name == nil {
-				name = t.Name()
-			} else if !name.Equals(t.Name()) {
-				logrus.Warnf(`target is using conflicting name's: %s != %s'`, name, t.Name())
-			}
-		}
-		if t.URI() != nil {
-			if uri == nil {
-				uri = t.URI()
-			} else if !uri.Equals(t.URI()) {
-				logrus.Warnf(`target %s is using conflicting URI's: %s != %s'`, name, uri, t.URI())
-			}
-		}
-	})
-	rn := r.contents.Name()
-	m := vf.MutableMap()
-	m.Put(idV, makeID(rn, name, uri))
-	m.Put(realmV, rn)
-	if name != nil {
-		m.Put(nameV, name)
-	} else {
-		m.Put(uriV, uri)
-	}
-
-	if uri != nil {
-		m.Put(uriV, uri)
-	}
-	if config.Len() > 0 {
-		m.Put(configV, config)
-	}
-	if facts.Len() > 0 {
-		m.Put(factsV, facts)
-	}
-	if features.Len() > 0 {
-		m.Put(featuresV, features)
-	}
-	if vars.Len() > 0 {
-		m.Put(varsV, vars)
-	}
-	return m
-}
-
 // dig will into the given value which must be a Map or an Array using the given keys in the given slice.
 // It is an error to call this method with an empty keys slice.
 func dig(keys []string, v dgo.Value) dgo.Value {
@@ -602,6 +564,9 @@ func dig(keys []string, v dgo.Value) dgo.Value {
 					continue
 				}
 			}
+		case Target:
+			v = c.Input().Get(key)
+			continue
 		case dgo.Map:
 			v = c.Get(key)
 			continue

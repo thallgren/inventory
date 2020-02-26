@@ -251,11 +251,11 @@ func ensureNoNode(realm, node string, t *testing.T) {
 }
 
 func staticDir() string {
-	return absTestDir(`static`)
+	return absTestDir(filepath.Join(`static`, `file`))
 }
 
 func volatileDir() string {
-	return absTestDir(`volatile`)
+	return absTestDir(filepath.Join(`volatile`, `file`))
 }
 
 func absTestDir(dir string) string {
