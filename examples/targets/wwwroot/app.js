@@ -20,8 +20,8 @@ function makePair(key, value, keyTag, valueTag) {
       if (value instanceof ResModel) {
         td = makeRecursiveMapModel(n, value)
       } else if (value instanceof ResCollection) {
-        td = n.component(new CollectionList(values,
-          value => (value instanceof ResModel) ? makeRecursiveMapModel(n, value) : n.text(value)))
+        td = n.component(new CollectionList(value,
+          value => (value instanceof ResModel) ? makeRecursiveMapModel(n, value) : new Txt(value)))
       } else {
         td = n.text(value)
       }
